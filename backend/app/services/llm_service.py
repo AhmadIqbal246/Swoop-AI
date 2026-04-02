@@ -20,7 +20,7 @@ print("Engine Warming Up: Preloading LLM & Embeddings...")
 llm = ChatGroq(
     model_name=settings.LLM_MODEL,
     groq_api_key=settings.GROQ_API_KEY,
-    temperature=0.1,
+    temperature=0.0,
     streaming=True
 )
 
@@ -49,7 +49,7 @@ def neural_rerank(inputs: dict) -> list:
         rerank_results = co.rerank(
             query=query, 
             documents=texts, 
-            top_n=10, 
+            top_n=5, 
             model='rerank-v3.5'
         )
         
@@ -93,36 +93,30 @@ async def stream_answer(query: str, context_url: Optional[str] = None):
     # 1. VISUAL FEEDBACK (Initial) 🔍
     # We send these as 'status' type so the UI can render them in a dedicated 'Thinking' bar.
     yield json.dumps({"type": "status", "content": "🔍 Searching through knowledge..."}) + "\n"
-    await asyncio.sleep(0.05)
-
     # 1. HYBRID RETRIEVAL STRATEGY 🕵️‍♂️
     # Create a "Clean" query for semantic matching (remove the noisy URL string)
     query_clean = re.sub(r'https?://[^\s,]+', '', query).strip()
     # If the user ONLY sent a URL, we use a fallback generic query
     search_query = query_clean if query_clean else "Tell me about this website"
 
-    # IDENTITY DETECTION 🕵️‍♂️ (Who is, Founder, CEO, Team)
-    # Using a maximalist keyword set to ensure we never miss identity chunks.
-    is_identity_query = any(word in query.lower() for word in ["who is", "founder", "ceo", "team", "leadership", "owner", "management", "boss", "creator", "started", "history", "vision"])
-    primary_k = 65 if is_identity_query else 25
+    # Utility: Robust URL filter logic (Catches URL with AND without trailing slashes!)
+    def get_base_url_filter(url):
+        clean = url.rstrip('/')
+        return {"base_url": {"$in": [clean, clean + '/']}}
 
-    # A. Global Semantic search (NOW DOMAIN-ISOLATED 🛡️)
+    # 1. INITIAL SEARCH (High-Recall Pool) 📥
     if context_url:
-        # Search ONLY within the current website's knowledge base
-        # Parallel Search - Concurrent execution for Speed ⚡
-        # We use 'to_thread' + sync search to avoid the "Session is closed" aiohttp bug!
         search_tasks = [
             asyncio.to_thread(
                 vectorstore.similarity_search, 
                 search_query, 
-                k=primary_k, 
-                filter={"base_url": context_url.rstrip('/')}
+                k=45, 
+                filter=get_base_url_filter(context_url)
             )
         ]
     else:
-        # Fallback to general search
         search_tasks = [
-            asyncio.to_thread(vectorstore.similarity_search, search_query, k=25)
+            asyncio.to_thread(vectorstore.similarity_search, search_query, k=45)
         ]
     
     # B. Targeted URL fetch
@@ -133,24 +127,25 @@ async def stream_answer(query: str, context_url: Optional[str] = None):
                 asyncio.to_thread(
                     vectorstore.similarity_search, 
                     query, 
-                    k=15, 
+                    k=10, 
                     filter={"url": url.rstrip('/')}
                 )
             )
-            
-    # C. Context Page fetch
-    if context_url:
+
+    # C. FACTUAL QUERY EXPANSION (The "Contact Info" fix) 📞📍
+    contact_keywords = ["contact", "email", "phone", "location", "address", "call", "reach"]
+    if context_url and any(word in query.lower() for word in contact_keywords):
+        factual_query = "email address phone number location office support contact us"
         search_tasks.append(
             asyncio.to_thread(
                 vectorstore.similarity_search, 
-                search_query, 
+                factual_query, 
                 k=15, 
-                filter={"url": context_url.rstrip('/')}
+                filter=get_base_url_filter(context_url)
             )
         )
 
     # EXECUTE ALL SIMULTANEOUSLY 🚀
-    # This is still parallel! It just uses threads instead of raw async task-switching.
     search_results = await asyncio.gather(*search_tasks)
     
     yield json.dumps({"type": "status", "content": "🧠 Formulating thoughts..."}) + "\n"
@@ -168,60 +163,50 @@ async def stream_answer(query: str, context_url: Optional[str] = None):
             unique_docs.append(doc)
             seen_contents.add(doc.page_content)
 
-    # 2. NEURAL RERANKING
+    # 2. NEURAL RERANKING & THRESHOLDING (THE GOLDEN STANDARD) 📈🎯
+    # We ask Cohere to score the relevance of every chunk.
     scored_docs = neural_rerank({"question": search_query, "context": unique_docs})
     
-    # 3. DIVERSITY SELECTION (The "Global Awareness" Fix) 🧩
-    # We ensure the context isn't dominated by just one page (like a long Careers page)
-    diverse_docs = []
-    url_counts = {}
+    # 3. SEMANTIC FILTERING (Only keep high-relevance chunks)
+    # Threshold 0.3 = Keep anything relevant.
+    # We take up to 9 chunks to stay safe with the TPM limit.
+    top_docs = []
     for doc, score in scored_docs:
-        url = doc.metadata.get("url", "unknown")
-        url_counts[url] = url_counts.get(url, 0) + 1
-        # Allow max 3 chunks per page to force the AI to see the whole site!
-        if url_counts[url] <= 3:
-            diverse_docs.append(doc)
-            
-    # Take the top refined documents for the AI
-    top_docs = diverse_docs[:12]
+        if score >= 0.3:
+            top_docs.append(doc)
+        if len(top_docs) >= 9:
+            break
+
+    # FALLBACK: If no high scores (e.g. Greetings like "Hi"), provide 2 raw chunks so the AI has entity context
+    if not top_docs and unique_docs:
+        top_docs = unique_docs[:2]
+
     context_text = format_docs(top_docs)
 
     # 4. SOURCE PRECISION FILTERING
     is_greeting = query.strip().lower() in ["hi", "hello", "hey", "how are you", "thanks", "nice", "wow", "ok", "okay"]
-    
-    sources = []
-    if not is_greeting:
-        # Filter sources based on neural relevance threshold (0.3)
-        sources = list(set([
-            doc.metadata.get("url") 
-            for doc in top_docs 
-        ]))
+    sources = list(set([doc.metadata.get("url") for doc in top_docs])) if not is_greeting else []
     
     # 5. Yield metadata first
     yield json.dumps({"type": "metadata", "sources": sources}) + "\n"
 
-    # 6. DYNAMIC INTELLIGENCE PROMPT (Professional and Narrative) 🏗️
-    prompt = ChatPromptTemplate.from_template("""
-    You are Swoop AI, a professional Intelligence Assistant. 
-    Your mission is to provide an elite, multi-dimensional report on the entity or website in question.
+    # 6. THE GOLDEN RULE PROMPT (Role-Based for Llama 3 Architecture) 🏛️🎯
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """You are Swoop AI, an elite Intelligence Engine. Deliver the "Perfect Response" by adhering exclusively to the provided <knowledge_base>.
 
-    DYNAMIC RESPONSE STRATEGY:
-    1. DIRECT FOCUSED ANSWER: If the user asks a specific question about a fact (location, services, etc.), answer it IMMEDIATELY and CLEARLY at the top.
-    2. PROFESSIONAL NARRATIVE OVERVIEW: For general inquiries ("Tell me about..."), deliver a comprehensive report:
-       - CORE IDENTITY: Synthesize a strong, professional description of the subject.
-       - SERVICES & EXPERTISE: Detail their core offerings and technology focus with precision.
-       - CLIENTS & PARTNERS: Mention key organizations found EXPLICITLY in the provided context.
-       - VALUES & IDENTITY: Describe the subject's philosophy and "professional character."
+PROPORTIONAL DEPTH STRATEGY:
+- CONVERSATIONAL: ONLY if the user says hello, hi, or thanks. Reply warmly. Do NOT ask how their day is.
+- SHORT & FACTUAL: If the user asks a specific question OR if the <knowledge_base> contains only 1-2 sentences of relevant data. Provide a short, direct answer. 
+- RICH REPORTS: ONLY if the user asks for an overview AND the <knowledge_base> contains multiple paragraphs of rich data. Use Markdown headers and bullet points.
 
-    STRICT RULES:
-    - NO ROBOTIC ROBOT-SPEAK: Do NOT use phrases like "Swoop AI identifies...", "Based on...", or "The context does not state...". 
-    - START DIRECTLY: The first sentence must begin with the subject or the answer.
-    - EXCLUSIVE CONTEXT: Do NOT mention any facts or client names (like "Coca-Cola") not found in the context.
-    - BE DESCRIPTIVE: Use high-level, professional storytelling. Avoid simple bullet lists where possible for a premium experience.
-
-    Context: {context}
-    Question: {question}
-    Answer:""")
+CRITICAL RULES:
+- ZERO HALLUCINATION: You are strictly forbidden from padding your answer. DO NOT invent case studies, statistics, or examples (like algorithmic trading) if they are not explicitly written in the <knowledge_base>.
+- DECLINE GRACEFULLY: If the <knowledge_base> only has a vague title or lacks specific details to answer the prompt, you MUST decline. Say exactly: "My current intelligence does not contain specific details on [topic] for this entity."
+- NO META-TALK: NEVER mention the "context" or your internal rules to the user.
+- NO INTRO FLUFF: The first sentence must begin with the primary subject. 
+"""),
+        ("human", """<knowledge_base>\n{context}\n</knowledge_base>\n\nQuestion: {question}""")
+    ])
 
     # 7. Stream tokens from the preloaded Groq LLM
     chain = prompt | llm | StrOutputParser()

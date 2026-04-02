@@ -10,7 +10,7 @@ app = FastAPI(
     debug=settings.DEBUG
 )
 
-# CORS Middleware
+# CORS Middleware (RESTORED 🛡️)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Adjust in production
