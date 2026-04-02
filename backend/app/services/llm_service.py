@@ -61,6 +61,12 @@ def neural_rerank(inputs: dict) -> list:
         # Fallback: Just return the first 5 docs with a dummy high-relevance score (1.0)
         return [(doc, 1.0) for doc in docs[:5]]
 
+def get_base_url_filter(url):
+    """Utility: Robust URL filter logic (Catches URL with AND without trailing slashes!)"""
+    if not url: return None
+    clean = url.rstrip('/')
+    return {"base_url": {"$in": [clean, clean + '/']}}
+
 async def stream_answer(query: str, context_url: Optional[str] = None):
     """
     Asynchronous generator that streams LLM tokens to the client in real-time.
@@ -93,33 +99,30 @@ async def stream_answer(query: str, context_url: Optional[str] = None):
     # 1. VISUAL FEEDBACK (Initial) 🔍
     # We send these as 'status' type so the UI can render them in a dedicated 'Thinking' bar.
     yield json.dumps({"type": "status", "content": "🔍 Searching through knowledge..."}) + "\n"
-    # 1. HYBRID RETRIEVAL STRATEGY 🕵️‍♂️
-    # Create a "Clean" query for semantic matching (remove the noisy URL string)
+    # 1. HYBRID RETRIEVAL STRATEGY (Global + Targeted) 🕵️‍♂️
+    # Create a "Clean" query for semantic matching (remove noisy URLs)
     query_clean = re.sub(r'https?://[^\s,]+', '', query).strip()
-    # If the user ONLY sent a URL, we use a fallback generic query
     search_query = query_clean if query_clean else "Tell me about this website"
 
-    # Utility: Robust URL filter logic (Catches URL with AND without trailing slashes!)
-    def get_base_url_filter(url):
-        clean = url.rstrip('/')
-        return {"base_url": {"$in": [clean, clean + '/']}}
+    # Search Tasks Pool (We execute these in parallel for speed)
+    search_tasks = []
 
-    # 1. INITIAL SEARCH (High-Recall Pool) 📥
+    # A. GLOBAL SEMANTIC SEARCH (Finding answers anywhere in the DB) 🌎
+    # This ensures we can answer about "Falconxoft" even while looking at "ezitech"
+    search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, search_query, k=25))
+
+    # B. TARGETED DOMAIN SEARCH (Filtering to the current site) 🎯
     if context_url:
-        search_tasks = [
+        search_tasks.append(
             asyncio.to_thread(
                 vectorstore.similarity_search, 
                 search_query, 
-                k=45, 
+                k=35, 
                 filter=get_base_url_filter(context_url)
             )
-        ]
-    else:
-        search_tasks = [
-            asyncio.to_thread(vectorstore.similarity_search, search_query, k=45)
-        ]
-    
-    # B. Targeted URL fetch
+        )
+
+    # C. Targeted URL fetch (if a specific link was pasted in query)
     extracted_urls = re.findall(r'(https?://[^\s,]+)', query)
     if extracted_urls:
         for url in extracted_urls:
@@ -132,18 +135,21 @@ async def stream_answer(query: str, context_url: Optional[str] = None):
                 )
             )
 
-    # C. FACTUAL QUERY EXPANSION (The "Contact Info" fix) 📞📍
+    # D. FACTUAL QUERY EXPANSION (The "Contact Info" fix) 📞📍
     contact_keywords = ["contact", "email", "phone", "location", "address", "call", "reach"]
-    if context_url and any(word in query.lower() for word in contact_keywords):
+    if any(word in query.lower() for word in contact_keywords):
         factual_query = "email address phone number location office support contact us"
-        search_tasks.append(
-            asyncio.to_thread(
-                vectorstore.similarity_search, 
-                factual_query, 
-                k=15, 
-                filter=get_base_url_filter(context_url)
+        # Search globally for contact info too
+        search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, factual_query, k=15))
+        if context_url:
+             search_tasks.append(
+                asyncio.to_thread(
+                    vectorstore.similarity_search, 
+                    factual_query, 
+                    k=10, 
+                    filter=get_base_url_filter(context_url)
+                )
             )
-        )
 
     # EXECUTE ALL SIMULTANEOUSLY 🚀
     search_results = await asyncio.gather(*search_tasks)
@@ -217,36 +223,36 @@ CRITICAL RULES:
 async def generate_answer(query: str, context_url: Optional[str] = None):
     """
     Normal synchronous version for internal API calls.
+    Allows for global knowledge base search while prioritizing the current context.
     """
+    # 1. CLEAN QUERY
+    query_clean = re.sub(r'https?://[^\s,]+', '', query).strip()
     search_query = query_clean if query_clean else "Tell me about this website"
     
-    # 1. INITIALIZE VECTOR STORE (FRESH PER SESSION) 🛡️⚡
+    # 1. INITIALIZE VECTOR STORE
     vectorstore = get_vector_store()
+    raw_docs = []
 
-    # A. Global Semantic search (NOW DOMAIN-ISOLATED 🛡️)
+    # A. Global Semantic search (🌎 Finding patterns anywhere)
+    global_docs = vectorstore.similarity_search(search_query, k=20)
+    raw_docs.extend(global_docs)
+
+    # B. Targeted Domain search (🎯 Only the current site)
     if context_url:
-        # Search ONLY within the current website's knowledge base
-        raw_docs = vectorstore.similarity_search(
+        targeted_docs = vectorstore.similarity_search(
             search_query, 
             k=25, 
-            filter={"base_url": context_url.rstrip('/')}
+            filter=get_base_url_filter(context_url)
         )
-    else:
-        # Fallback to general (less accurate) search if no context is provided
-        raw_docs = vectorstore.similarity_search(search_query, k=20)
+        raw_docs.extend(targeted_docs)
     
-    # B. Targeted URL fetch
+    # C. Targeted URL fetch
     extracted_urls = re.findall(r'(https?://[^\s,]+)', query)
     if extracted_urls:
         for url in extracted_urls:
             clean_url = url.rstrip('/')
-            targeted_docs = vectorstore.similarity_search(query, k=15, filter={"url": clean_url})
-            raw_docs.extend(targeted_docs)
-            
-    # C. Context-aware search
-    if context_url:
-        in_session_docs = vectorstore.similarity_search(search_query, k=10, filter={"url": context_url.rstrip('/')})
-        raw_docs.extend(in_session_docs)
+            url_docs = vectorstore.similarity_search(query, k=10, filter={"url": clean_url})
+            raw_docs.extend(url_docs)
 
     # D. Deduplicate
     unique_docs = []
