@@ -6,25 +6,15 @@ import HomePage from './pages/HomePage';
 import ChatPage from './pages/ChatPage';
 
 function App() {
-  const [taskState, setTaskState] = useState(() => {
-    const saved = localStorage.getItem('swoop_task_state');
-    if (saved) {
-      try { return JSON.parse(saved); } catch {}
-    }
-    return {
-      taskId: null,
-      url: '',
-      status: 'IDLE',
-      message: '',
-      pagesMapped: 0,
-      processedPages: [],
-      chatReady: false
-    };
+  const [taskState, setTaskState] = useState({
+    taskId: null,
+    url: '',
+    status: 'IDLE',
+    message: '',
+    pagesMapped: 0,
+    processedPages: [],
+    chatReady: false
   });
-
-  React.useEffect(() => {
-    localStorage.setItem('swoop_task_state', JSON.stringify(taskState));
-  }, [taskState]);
 
   return (
     <Router>

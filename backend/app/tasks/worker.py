@@ -66,7 +66,7 @@ def process_url_task(self, url: str):
     total_found = len(target_urls)
     
     # 2. THE SWOOP (Parallel Scrape)
-    emit_log(f'Reading site structure ({total_found} pages found)...')
+    emit_log(f'Analyzing site architecture ({total_found} pages)...')
     all_results = asyncio.run(scrape_urls_parallel(target_urls, headless=False))
     
     # 3. KNOWLEDGE CONSOLIDATION & LIVE REPORTING
@@ -86,7 +86,7 @@ def process_url_task(self, url: str):
         processed_list.append(target_url)
         
         # LIVE PROGRESS UPDATE PER PAGE! 🚀
-        emit_log(f'Extracting content from {target_url}...', processed_list)
+        emit_log(f'Gathering knowledge from {target_url}...', processed_list)
         
         # Format for Structural Discovery
         master_text += f"\n\n{'='*60}\n"
@@ -130,7 +130,7 @@ def process_url_task(self, url: str):
 
     return {
         "status": "COMPLETED",
-        "message": f"Successfully swiped and vectorized {len(structural_chunks)} chunks from {total_found} pages.",
+        "message": "All set! I have finished reading the website and am ready to answer your questions.",
         "processed_pages": processed_list,
         "master_document": os.path.abspath(file_path)
     }

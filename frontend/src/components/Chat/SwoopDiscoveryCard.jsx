@@ -41,7 +41,7 @@ const SwoopDiscoveryCard = ({ taskId, onComplete }) => {
         {/* Text */}
         <div className="flex items-center space-x-3">
           <span className="text-[14px] font-medium text-slate-700">
-            {isWorking ? 'Analyzing site content...' : isSuccess ? 'Knowledge mapped successfully' : 'Analysis failed'}
+            {isWorking ? 'Analyzing site content...' : isSuccess ? 'Knowledge mapped! You can ask questions now.' : 'Analysis failed'}
           </span>
           
           <button 
