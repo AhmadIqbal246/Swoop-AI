@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from app.core.celery_app import celery_app
 from celery.result import AsyncResult
-from app.services.llm_service import generate_answer
+from app.services.llm_service import generate_answer, stream_answer
 from app.schemas.request import ProcessURLRequest, ChatRequest
 from app.schemas.response import TaskResponse, ChatResponse
 from app.tasks.worker import process_url_task
@@ -52,17 +53,12 @@ async def get_task_status(task_id: str):
     
     return response
 
-@router.post("/chat", response_model=ChatResponse)
+@router.post("/chat")
 async def chat(data: ChatRequest):
     """
-    Answers a question based on the indexed content, isolated by domain context.
+    Answers a question by streaming tokens from the LLM in real-time.
     """
-    try:
-        rag_response = generate_answer(data.query, data.context_url)
-        return ChatResponse(
-            answer=rag_response["answer"],
-            sources=rag_response["sources"],
-            status="success"
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return StreamingResponse(
+        stream_answer(data.query, data.context_url),
+        media_type="application/x-ndjson"
+    )

@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     # API Keys
     GROQ_API_KEY: str
     HUGGINGFACEHUB_API_TOKEN: str
+    COHERE_API_KEY: str
     PINECONE_API_KEY: str
     PINECONE_ENVIRONMENT: str = "us-east-1"
     PINECONE_INDEX_NAME: str = "chatbot-index"

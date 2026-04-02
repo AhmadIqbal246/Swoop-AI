@@ -59,19 +59,73 @@ const ChatInterface = ({ taskState, setTaskState }) => {
 
     const userMsg = { role: 'user', content: query };
     setMessages(prev => [...prev, userMsg]);
+    const currentQuery = query;
     setQuery('');
     setIsTyping(true);
 
     try {
-      const data = await chatService.sendMessage(query, taskState?.url);
-      const aiMsg = {
-        role: 'ai',
-        content: data.answer,
-        sources: data.sources || []
-      };
-      setMessages(prev => [...prev, aiMsg]);
+      const response = await fetch('http://localhost:8000/api/v1/chatbot/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          query: currentQuery, 
+          context_url: taskState?.url 
+        })
+      });
+
+      if (!response.ok) throw new Error('Stream error');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let done = false;
+      let accumulatedContent = '';
+      let aiMessageAdded = false;
+
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        done = readerDone;
+        if (value) {
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n');
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const data = JSON.parse(line);
+              
+              // Ensure we have an AI message in the list before updating it
+              if (!aiMessageAdded) {
+                setMessages(prev => [...prev, { role: 'ai', content: '', sources: [] }]);
+                aiMessageAdded = true;
+              }
+
+              if (data.type === 'metadata') {
+                setMessages(prev => {
+                  const newMsgs = [...prev];
+                  newMsgs[newMsgs.length - 1].sources = data.sources;
+                  return newMsgs;
+                });
+              } else if (data.type === 'token') {
+                accumulatedContent += data.content;
+                setMessages(prev => {
+                  const newMsgs = [...prev];
+                  newMsgs[newMsgs.length - 1].content = accumulatedContent;
+                  return newMsgs;
+                });
+              }
+            } catch (err) {
+              console.error("JSON parse error on stream line:", err);
+            }
+          }
+        }
+      }
     } catch (error) {
       console.error("Chat error:", error);
+      setMessages(prev => [...prev, { 
+        role: 'ai', 
+        content: "Sorry, I encountered an error connecting to the engine.", 
+        sources: [] 
+      }]);
     } finally {
       setIsTyping(false);
     }
@@ -155,8 +209,8 @@ const ChatInterface = ({ taskState, setTaskState }) => {
                       {msg.content}
                     </div>
 
-                    {/* Sources Anchor Box */}
-                    {msg.sources && msg.sources.length > 0 && (
+                    {/* Sources Anchor Box - Only show after content starts appearring */}
+                    {msg.sources && msg.sources.length > 0 && msg.content && (
                       <div className="mt-4 flex flex-wrap gap-2">
                         {msg.sources.map((url, sIdx) => {
                           const p = getSafePathname(url);
@@ -183,8 +237,8 @@ const ChatInterface = ({ taskState, setTaskState }) => {
             )
           ))}
 
-          {/* Typing Indicator */}
-          {isTyping && (
+          {/* Typing Indicator - Only show while we are waiting for the first chunk */}
+          {isTyping && messages[messages.length - 1]?.role !== 'ai' && (
             <div className="w-full py-8 bg-slate-50/50 border-b border-black/5">
               <div className="max-w-3xl mx-auto w-full px-4 flex gap-6">
                 <div className="flex-shrink-0 mt-1">
