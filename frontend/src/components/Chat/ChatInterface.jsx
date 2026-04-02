@@ -1,22 +1,21 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { chatService, scraperService } from '../../services/api';
+import React, { useState, useRef, useEffect } from 'react';
+import { useChatStream } from '../../hooks/useChatStream';
+import { useSwoop } from '../../hooks/useSwoop';
 import SwoopDiscoveryCard from './SwoopDiscoveryCard';
 
 const ChatInterface = ({ taskState, setTaskState }) => {
   const [query, setQuery] = useState('');
-  const [messages, setMessages] = useState([]);
-  const [isTyping, setIsTyping] = useState(false);
   const [isSwoopMode, setIsSwoopMode] = useState(false);
-  const [swoopLoading, setSwoopLoading] = useState(false);
   const scrollRef = useRef(null);
+
+  // DATA HOOKS 🎣
+  const { messages, setMessages, isTyping, sendMessage, addSwoopCard } = useChatStream(taskState?.url);
+  
+  const { startSwoop, isPending: isSwoopLoading } = useSwoop();
 
   const PROCESSING_STATES = ['PENDING', 'PROGRESS', 'STARTING'];
   const isActivelyProcessing = taskState?.taskId && PROCESSING_STATES.includes(taskState?.status);
   const isKnowledgeReady = !isActivelyProcessing;
-
-  const getSafeHostname = (urlStr) => {
-    try { return new URL(urlStr).hostname; } catch { return "the site"; }
-  };
 
   const getSafePathname = (urlStr) => {
     try { return new URL(urlStr).pathname; } catch { return "/"; }
@@ -28,131 +27,57 @@ const ChatInterface = ({ taskState, setTaskState }) => {
     }
   }, [messages, isTyping, taskState, isKnowledgeReady]);
 
-  // Auto-inject a 'swoop' message when taskState arrives from an external source (e.g. HomePage)
+  const processedTasks = useRef(new Set());
+
   useEffect(() => {
-    if (taskState?.taskId) {
+    if (taskState?.taskId && !processedTasks.current.has(taskState.taskId)) {
       const alreadyExists = messages.some(m => m.role === 'swoop' && m.taskId === taskState.taskId);
       if (!alreadyExists) {
-        setMessages(prev => [...prev, { role: 'swoop', taskId: taskState.taskId }]);
+        addSwoopCard(taskState.taskId);
+        processedTasks.current.add(taskState.taskId);
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskState?.taskId]);
 
-  const handleSend = async (e) => {
-    e.preventDefault();
-    if (!query.trim()) return;
-
-    if (isSwoopMode) {
-      setSwoopLoading(true);
-      try {
-        const data = await scraperService.processUrl(query.trim());
-        const newTaskState = {
-          taskId: data.task_id,
-          url: query.trim(),
-          status: 'PENDING',
-          message: 'Initializing New Indexing...',
-          pagesMapped: 0,
-          processedPages: [],
-          chatReady: false
-        };
-        setTaskState(newTaskState);
-        // Insert the Swoop card into the messages flow at this exact position
-        setMessages(prev => [...prev, { role: 'swoop', taskId: data.task_id }]);
-        setQuery('');
-        setIsSwoopMode(false);
-      } catch (error) {
-        console.error("Swoop error:", error);
-      } finally {
-        setSwoopLoading(false);
-      }
-      return;
-    }
-
-    if (!isKnowledgeReady) return;
-
-    const userMsg = { role: 'user', content: query };
-    setMessages(prev => [...prev, userMsg]);
-    const currentQuery = query;
-    setQuery('');
-    setIsTyping(true);
-
-    try {
-      const response = await fetch('http://localhost:8000/api/v1/chatbot/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          query: currentQuery, 
-          context_url: taskState?.url 
-        })
-      });
-
-      if (!response.ok) throw new Error('Stream error');
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let done = false;
-      let accumulatedContent = '';
-      let aiMessageAdded = false;
-
-      while (!done) {
-        const { value, done: readerDone } = await reader.read();
-        done = readerDone;
-        if (value) {
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split('\n');
-
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            try {
-              const data = JSON.parse(line);
-              
-              // Ensure we have an AI message in the list before updating it
-              if (!aiMessageAdded) {
-                setMessages(prev => [...prev, { role: 'ai', content: '', sources: [] }]);
-                aiMessageAdded = true;
-              }
-
-              if (data.type === 'metadata') {
-                setMessages(prev => {
-                  const newMsgs = [...prev];
-                  newMsgs[newMsgs.length - 1].sources = data.sources;
-                  return newMsgs;
-                });
-              } else if (data.type === 'token') {
-                accumulatedContent += data.content;
-                setMessages(prev => {
-                  const newMsgs = [...prev];
-                  newMsgs[newMsgs.length - 1].content = accumulatedContent;
-                  return newMsgs;
-                });
-              }
-            } catch (err) {
-              console.error("JSON parse error on stream line:", err);
-            }
-          }
-        }
-      }
-    } catch (error) {
-      console.error("Chat error:", error);
-      setMessages(prev => [...prev, { 
-        role: 'ai', 
-        content: "Sorry, I encountered an error connecting to the engine.", 
-        sources: [] 
-      }]);
-    } finally {
-      setIsTyping(false);
-    }
-  };
-
-  const handleDiscoveryComplete = useCallback((pagesCount) => {
+  const handleDiscoveryComplete = (pagesCount) => {
     setTaskState(prev => ({
       ...prev,
       status: 'SUCCESS',
       chatReady: true,
       pagesMapped: pagesCount
     }));
-  }, [setTaskState]);
+  };
+
+  const handleSend = async (e) => {
+    e.preventDefault();
+    if (!query.trim()) return;
+
+    if (isSwoopMode) {
+      startSwoop(query.trim(), {
+        onSuccess: (data, url) => {
+          setTaskState({
+            taskId: data.task_id,
+            url: url,
+            status: 'PENDING',
+            message: 'Initializing New Indexing...',
+            pagesMapped: 0,
+            processedPages: [],
+            chatReady: false
+          });
+          setQuery('');
+          setIsSwoopMode(false);
+        }
+      });
+      return;
+    }
+
+    if (!isKnowledgeReady) return;
+    
+    const currentQuery = query;
+    setQuery('');
+    await sendMessage(currentQuery);
+  };
 
   return (
     <div className="w-full flex-1 min-h-0 flex flex-col bg-white relative">
@@ -289,21 +214,21 @@ const ChatInterface = ({ taskState, setTaskState }) => {
               }
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              disabled={!isSwoopMode && !isKnowledgeReady || swoopLoading}
+              disabled={!isSwoopMode && !isKnowledgeReady || isSwoopLoading}
               className={`w-full h-14 pl-6 pr-14 rounded-[2rem] text-[15px] font-medium transition-all outline-none border 
-                ${(isSwoopMode || isKnowledgeReady) && !swoopLoading
+                ${(isSwoopMode || isKnowledgeReady) && !isSwoopLoading
                   ? `bg-white border-slate-200 focus:ring-4 focus:ring-slate-100 text-slate-800 ${isSwoopMode ? 'border-primary/30 focus:border-primary/50' : 'focus:border-slate-300'}`
                   : 'bg-slate-50 border-slate-100 opacity-60 cursor-not-allowed italic text-slate-500'}`}
             />
             <button
               type="submit"
-              disabled={(isSwoopMode ? !query.trim() : !isKnowledgeReady || !query.trim()) || swoopLoading}
+              disabled={(isSwoopMode ? !query.trim() : !isKnowledgeReady || !query.trim()) || isSwoopLoading}
               className={`absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-full transition-all
-                ${(isSwoopMode || isKnowledgeReady) && query.trim() && !swoopLoading
+                ${(isSwoopMode || isKnowledgeReady) && query.trim() && !isSwoopLoading
                   ? 'bg-primary text-white hover:opacity-90 pointer-events-auto shadow-sm'
                   : 'bg-slate-100 text-slate-300 pointer-events-none'}`}
             >
-              {swoopLoading ? (
+              {isSwoopLoading ? (
                 <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
               ) : (
                 <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">

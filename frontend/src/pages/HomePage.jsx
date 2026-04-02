@@ -1,38 +1,38 @@
-import React, { useState } from 'react';
+import React from 'react';
 import UrlInput from '../components/Discovery/UrlInput';
-import { scraperService } from '../services/api';
+import { useSwoop } from '../hooks/useSwoop';
 import { useNavigate } from 'react-router-dom';
 
 const HomePage = ({ taskState, setTaskState }) => {
     const navigate = useNavigate();
-    const [loading, setLoading] = useState(false);
     
-    // START THE PARALLEL SWOOP — Navigate with Router State (Bulletproof 🛡️)
-    const handleStartSwooping = async (url) => {
-      setLoading(true);
-      try {
-        const data = await scraperService.processUrl(url);
-        
-        const newTask = {
-          taskId: data.task_id,
-          url,
-          status: 'PENDING',
-          message: 'Mapping Site Structure...',
-          pagesMapped: 0,
-          processedPages: [],
-          chatReady: false
-        };
-
-        // Update global state AND pass via router state simultaneously
-        // This guarantees ChatPage receives taskId on FIRST render
-        setTaskState(newTask);
-        navigate('/chat', { state: { taskId: data.task_id, url } });
-
-      } catch (error) {
-        console.error("Swoop error:", error);
-        setTaskState(prev => ({ ...prev, status: 'ERROR', message: 'Failed to start. Check backend.' }));
-        setLoading(false);
-      }
+    // DATA HOOK 🎣
+    const { startSwoop, isPending: isLoading } = useSwoop();
+    
+    const handleStartSwooping = (url) => {
+      startSwoop(url, {
+        onSuccess: (data) => {
+          const newTask = {
+            taskId: data.task_id,
+            url,
+            status: 'PENDING',
+            message: 'Mapping Site Structure...',
+            pagesMapped: 0,
+            processedPages: [],
+            chatReady: false
+          };
+          setTaskState(newTask);
+          navigate('/chat', { state: { taskId: data.task_id, url } });
+        },
+        onError: (error) => {
+          console.error("Swoop error:", error);
+          setTaskState(prev => ({ 
+            ...prev, 
+            status: 'ERROR', 
+            message: 'Failed to start. Check backend.' 
+          }));
+        }
+      });
     };
   
     // LOCAL POLLING REMOVED - DELEGATED TO CHAT PAGE 🤖
@@ -50,7 +50,7 @@ const HomePage = ({ taskState, setTaskState }) => {
                 </p>
               </section>
   
-              <UrlInput onStartSwooping={handleStartSwooping} isLoading={loading} />
+              <UrlInput onStartSwooping={handleStartSwooping} isLoading={isLoading} />
   
 
           </div>

@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = 'http://localhost:8000/api/v1/chatbot';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1/chatbot';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -25,7 +25,7 @@ export const chatService = {
   sendMessage: async (query, contextUrl = null, sessionId = 'default') => {
     const response = await api.post('/chat', { 
       query, 
-      session_id: sessionId,
+      session_id: sessionId, 
       context_url: contextUrl 
     });
     return response.data;
