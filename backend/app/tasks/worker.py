@@ -29,14 +29,24 @@ def process_url_task(self, url: str):
 
     emit_log(f'Navigating to {url}...')
     
-    # 1. DISCOVERY (Initial Scan)
+    # 1. DISCOVERY & IDENTITY-CORE INJECTION 🧠🔨
+    # Regardless of where the user starts, we find the "Brain" of the site.
+    parsed_url = urlparse(url)
+    base_url = f"{parsed_url.scheme}://{parsed_url.netloc}".rstrip("/")
+    
+    # Automatically seed the "Core Identity" pages for any domain
+    to_scrape = {
+        url,                    # The provided start URL
+        base_url,               # The Root/Home Page
+        f"{base_url}/about",    # Common About variants
+        f"{base_url}/about-us",
+        f"{base_url}/team"
+    } 
+    
     init_res = asyncio.run(scrape_urls_parallel([url], headless=False))
     init_data = init_res[0]
-    to_scrape = {url} # Set to avoid duplicates
     
     # EXCLUSION LIST: Pages we KNOW are useless for an AI knowledge base
-    # Everything else discovered on the homepage will be scraped.
-    # Note: '#' anchors are already stripped by the scraper, no need to exclude here.
     excluded_patterns = [
         "privacy", "terms", "cookie", "legal", "disclaimer",
         "login", "signin", "signup", "register", "logout",
@@ -46,23 +56,25 @@ def process_url_task(self, url: str):
         "?utm_", "?ref=", "?source="
     ]
     
-    # Normalize the homepage URL for deduplication
-    homepage_normalized = url.rstrip("/").lower()
+    # Normalize the homepage for deduplication
+    homepage_normalized = base_url.lower()
     
     for link in init_data.get("links", []):
-        full_link = link["url"]
+        full_link = link["url"].rstrip("/")
         
-        # Skip if it resolves to the same page as the homepage (pure anchor links)
-        if full_link.rstrip("/").lower() == homepage_normalized:
+        # Skip if it's the home page (already in set) or resolves to same anchor
+        if full_link.lower() == homepage_normalized:
             continue
         
-        # Skip if it's a junk/excluded link
+        # Skip excluded junk
         is_excluded = any(pattern in full_link.lower() for pattern in excluded_patterns)
         
         if not is_excluded and full_link not in to_scrape:
             to_scrape.add(full_link)
 
-    target_urls = list(to_scrape)[:15]
+    # Convert to list and ensure high-value URLs are in the TOP 15
+    # We sort to keep shorter URLs (usually root/about) at the top.
+    target_urls = sorted(list(to_scrape), key=len)[:15]
     total_found = len(target_urls)
     
     # 2. THE SWOOP (Parallel Scrape)
@@ -77,22 +89,32 @@ def process_url_task(self, url: str):
     processed_list = []
     
     for index, res in enumerate(all_results):
-        target_url = res.get("url")
+        final_url = res.get("final_url")
+        original_url = res.get("original_url")
+        title = res.get("title", "Unknown Page")
         raw_text = res.get("text")
+        
         if not raw_text:
             continue
             
         cleaned = clean_raw_text(raw_text)
-        processed_list.append(target_url)
+        processed_list.append(original_url)
         
         # LIVE PROGRESS UPDATE PER PAGE! 🚀
-        emit_log(f'Gathering knowledge from {target_url}...', processed_list)
+        emit_log(f'Gathering knowledge from {title}...', processed_list)
         
-        # Format for Structural Discovery
+        # 1. Store under FINAL URL (The physical location)
         master_text += f"\n\n{'='*60}\n"
-        master_text += f" SOURCE PAGE: {target_url}\n"
+        master_text += f" SOURCE PAGE: {final_url} | TITLE: {title}\n"
         master_text += f"{'='*60}\n\n"
         master_text += cleaned + "\n"
+
+        # 2. ALSO Store under ORIGINAL URL (If different, to ensure recognition)
+        if original_url and original_url != final_url:
+            master_text += f"\n\n{'='*60}\n"
+            master_text += f" SOURCE PAGE: {original_url} | TITLE: {title}\n"
+            master_text += f"{'='*60}\n\n"
+            master_text += cleaned + "\n"
 
     # Export Unified Master Knowledge Base File
     parsed_domain = urlparse(url).netloc.replace(".", "_")
