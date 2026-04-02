@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { useChatStream } from '../../hooks/useChatStream';
 import { useSwoop } from '../../hooks/useSwoop';
 import SwoopDiscoveryCard from './SwoopDiscoveryCard';
@@ -39,6 +40,19 @@ const ChatInterface = ({ taskState, setTaskState }) => {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskState?.taskId]);
+
+  useEffect(() => {
+    const closeDropdowns = (e) => {
+      // If the click is outside any <details> element, close all open ones
+      if (!e.target.closest('details')) {
+        document.querySelectorAll('details[open]').forEach(details => {
+          details.removeAttribute('open');
+        });
+      }
+    };
+    document.addEventListener('click', closeDropdowns);
+    return () => document.removeEventListener('click', closeDropdowns);
+  }, []);
 
   const handleDiscoveryComplete = (pagesCount) => {
     setTaskState(prev => ({
@@ -154,23 +168,31 @@ const ChatInterface = ({ taskState, setTaskState }) => {
                       </div>
                     )}
 
-                    <div className="prose prose-slate max-w-none text-[15px] leading-relaxed text-slate-700 font-medium">
-                      {msg.content}
+                    <div className="text-[15px] leading-relaxed text-slate-700 font-medium">
+                      <ReactMarkdown 
+                        components={{
+                          p: ({node, ...props}) => <p className="mb-4 last:mb-0" {...props} />,
+                          strong: ({node, ...props}) => <strong className="font-bold text-slate-900" {...props} />,
+                          ul: ({node, ...props}) => <ul className="list-disc marker:text-slate-400 pl-5 space-y-1.5 mb-4 last:mb-0 mt-2" {...props} />,
+                          li: ({node, ...props}) => <li className="pl-1" {...props} />,
+                          h1: ({node, ...props}) => <h1 className="text-lg font-bold text-slate-900 mb-3 mt-6 first:mt-0" {...props} />,
+                          h2: ({node, ...props}) => <h2 className="text-[16px] font-bold text-slate-900 mb-2 mt-5 first:mt-0" {...props} />,
+                          h3: ({node, ...props}) => <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-2 mt-5 first:mt-0" {...props} />
+                        }}
+                      >
+                        {msg.content}
+                      </ReactMarkdown>
                     </div>
 
-                    {/* Sources Anchor Box - Only show after content starts appearing */}
+                    {/* Sources Anchor Box */}
                     {msg.sources && msg.sources.length > 0 && msg.content && (
-                      <div className="mt-4 flex flex-wrap gap-2">
-                        {msg.sources.map((url, sIdx) => {
+                      <div className="mt-4 flex flex-wrap items-start gap-2">
+                        {/* Always visible Top 2 Sources */}
+                        {msg.sources.slice(0, 2).map((url, sIdx) => {
                           const p = getSafePathname(url);
                           return (
-                            <a
-                              key={sIdx}
-                              href={url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold text-slate-500 hover:text-primary hover:border-primary/30 transition-all shadow-sm"
-                            >
+                            <a key={`top-${sIdx}`} href={url} target="_blank" rel="noreferrer"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold text-slate-500 hover:text-primary hover:border-primary/30 transition-all shadow-sm">
                               <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
                               </svg>
@@ -178,6 +200,32 @@ const ChatInterface = ({ taskState, setTaskState }) => {
                             </a>
                           );
                         })}
+
+                        {/* Collapsible Remaining Sources */}
+                        {msg.sources.length > 2 && (
+                          <details className="group shrink-0 relative">
+                            <summary className="inline-flex cursor-pointer items-center gap-1.5 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-bold text-slate-500 hover:text-slate-700 transition-all shadow-sm list-none select-none">
+                              <span>+{msg.sources.length - 2} more sources</span>
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 text-slate-400 group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                              </svg>
+                            </summary>
+                            
+                            <div className="absolute left-0 sm:left-auto pt-2 z-10 w-max max-w-[280px]">
+                              <div className="flex flex-wrap gap-2 p-3 bg-white border border-slate-200 shadow-xl rounded-xl">
+                                {msg.sources.slice(2).map((url, sIdx) => {
+                                  const p = getSafePathname(url);
+                                  return (
+                                    <a key={`extra-${sIdx}`} href={url} target="_blank" rel="noreferrer"
+                                      className="inline-flex w-full items-center gap-1.5 px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-[11px] font-bold text-slate-500 hover:text-primary transition-all">
+                                      <span className="truncate">{p === '/' ? 'Home Page' : p}</span>
+                                    </a>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </details>
+                        )}
                       </div>
                     )}
                   </div>
