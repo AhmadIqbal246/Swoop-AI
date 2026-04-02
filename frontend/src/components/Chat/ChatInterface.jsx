@@ -1,11 +1,13 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { chatService } from '../../services/api';
+import { chatService, scraperService } from '../../services/api';
 import SwoopDiscoveryCard from './SwoopDiscoveryCard';
 
 const ChatInterface = ({ taskState, setTaskState }) => {
   const [query, setQuery] = useState('');
   const [messages, setMessages] = useState([]);
   const [isTyping, setIsTyping] = useState(false);
+  const [isSwoopMode, setIsSwoopMode] = useState(false);
+  const [swoopLoading, setSwoopLoading] = useState(false);
   const scrollRef = useRef(null);
 
   const PROCESSING_STATES = ['PENDING', 'PROGRESS', 'STARTING'];
@@ -28,7 +30,32 @@ const ChatInterface = ({ taskState, setTaskState }) => {
 
   const handleSend = async (e) => {
     e.preventDefault();
-    if (!query.trim() || !isKnowledgeReady) return;
+    if (!query.trim()) return;
+
+    if (isSwoopMode) {
+      setSwoopLoading(true);
+      try {
+        const data = await scraperService.processUrl(query.trim());
+        setTaskState({
+          taskId: data.task_id,
+          url: query.trim(),
+          status: 'PENDING',
+          message: 'Initializing New Indexing...',
+          pagesMapped: 0,
+          processedPages: [],
+          chatReady: false
+        });
+        setQuery('');
+        setIsSwoopMode(false);
+      } catch (error) {
+        console.error("Swoop error:", error);
+      } finally {
+        setSwoopLoading(false);
+      }
+      return;
+    }
+
+    if (!isKnowledgeReady) return;
 
     const userMsg = { role: 'user', content: query };
     setMessages(prev => [...prev, userMsg]);
@@ -180,36 +207,64 @@ const ChatInterface = ({ taskState, setTaskState }) => {
 
       {/* Floating Minimal Input Area - Fixed strictly to bottom viewport */}
       <div className="fixed bottom-0 left-0 w-full bg-gradient-to-t from-white via-white to-transparent pt-20 pb-8 px-4 z-50 pointer-events-none">
-        <div className="max-w-3xl mx-auto w-full pointer-events-auto">
-          <form onSubmit={handleSend} className="relative shadow-[0_0_30px_rgba(0,0,0,0.08)] bg-white rounded-[2rem]">
+        <div className="max-w-3xl mx-auto w-full pointer-events-auto flex items-center gap-3">
+          <form onSubmit={handleSend} className="flex-1 relative shadow-[0_0_30px_rgba(0,0,0,0.08)] bg-white rounded-[2rem]">
             <input
               type="text"
-              placeholder={isActivelyProcessing ? "Mapping context... engine is busy 🕵️‍♂️" : "Message..."}
+              placeholder={
+                isSwoopMode 
+                  ? "Enter website URL to swoop..." 
+                  : isActivelyProcessing 
+                    ? "Mapping context... engine is busy 🕵️‍♂️" 
+                    : "Message..."
+              }
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              disabled={!isKnowledgeReady}
+              disabled={!isSwoopMode && !isKnowledgeReady || swoopLoading}
               className={`w-full h-14 pl-6 pr-14 rounded-[2rem] text-[15px] font-medium transition-all outline-none border 
-                ${isKnowledgeReady
-                  ? 'bg-white border-slate-200 focus:border-slate-300 focus:ring-4 focus:ring-slate-100 text-slate-800'
+                ${(isSwoopMode || isKnowledgeReady) && !swoopLoading
+                  ? `bg-white border-slate-200 focus:ring-4 focus:ring-slate-100 text-slate-800 ${isSwoopMode ? 'border-primary/30 focus:border-primary/50' : 'focus:border-slate-300'}`
                   : 'bg-slate-50 border-slate-100 opacity-60 cursor-not-allowed italic text-slate-500'}`}
             />
             <button
               type="submit"
-              disabled={!isKnowledgeReady || !query.trim()}
+              disabled={(isSwoopMode ? !query.trim() : !isKnowledgeReady || !query.trim()) || swoopLoading}
               className={`absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-full transition-all
-                ${isKnowledgeReady && query.trim()
+                ${(isSwoopMode || isKnowledgeReady) && query.trim() && !swoopLoading
                   ? 'bg-primary text-white hover:opacity-90 pointer-events-auto shadow-sm'
                   : 'bg-slate-100 text-slate-300 pointer-events-none'}`}
             >
-              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 10l7-7m0 0l7 7m-7-7v18" />
-              </svg>
+              {swoopLoading ? (
+                <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+              ) : (
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  {isSwoopMode ? (
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 4v16m8-8H4" />
+                  ) : (
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 10l7-7m0 0l7 7m-7-7v18" />
+                  )}
+                </svg>
+              )}
             </button>
           </form>
-          <p className="text-center text-[10px] text-slate-400 font-medium mt-3 tracking-wide bg-white/50 backdrop-blur-sm rounded-full py-1 inline-block px-4 mx-auto block w-max">
-            AI can make mistakes. Always verify critical technical details against the raw sources.
-          </p>
+
+          {/* Mode Switcher Link/Globe Icon - Moved to Right */}
+          <button
+            onClick={() => setIsSwoopMode(!isSwoopMode)}
+            className={`flex-shrink-0 w-11 h-11 flex items-center justify-center rounded-full transition-all duration-300 border shadow-sm
+              ${isSwoopMode 
+                ? 'bg-primary text-white border-primary shadow-primary/20 scale-110' 
+                : 'bg-white text-slate-400 border-slate-200 hover:text-primary hover:border-primary/30'}`}
+            title={isSwoopMode ? "Switch to Chat" : "Switch to Swoop (Index URL)"}
+          >
+             <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+             </svg>
+          </button>
         </div>
+        <p className="text-center text-[10px] text-slate-400 font-medium mt-3 tracking-wide bg-white/50 backdrop-blur-sm rounded-full py-1 px-4 mx-auto block w-max">
+          {isSwoopMode ? "Swooping generates a temporary context for your AI session." : "AI can make mistakes. Always verify critical technical details against the raw sources."}
+        </p>
       </div>
 
     </div>
@@ -217,3 +272,4 @@ const ChatInterface = ({ taskState, setTaskState }) => {
 };
 
 export default ChatInterface;
+

@@ -43,10 +43,10 @@ const HomePage = ({ taskState, setTaskState }) => {
           <div className="w-full flex flex-col items-center space-y-20 animate-fade-in">
               <section className="text-center space-y-8">
                 <h1 className="text-6xl md:text-8xl font-black tracking-tighter leading-none text-slate-main">
-                  Intelligent <br className="hidden md:block"/>Parallel <span className="text-primary tracking-normal">RAG</span>
+                  Get Instant <br className="hidden md:block"/>Answers from <span className="text-primary tracking-normal">Your Content</span>
                 </h1>
                 <p className="text-lg md:text-2xl text-slate-muted max-w-2xl mx-auto font-light leading-relaxed">
-                  Build your private AI knowledge base in a single burst. Just drop a URL and our parallel engine will swoop and index.
+                  Transform any website into a searchable AI playground. Paste a link to start chatting with its content instantly.
                 </p>
               </section>
   
