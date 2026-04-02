@@ -185,6 +185,33 @@ def process_url_task(self, url: str):
         # Non-fatal: log and continue
         print(f"Readiness check warning: {e}")
 
+    # 6. REGISTER ENTITY IN THE GLOBAL INVENTORY 🗃️
+    try:
+        import json
+        registry_path = os.path.join(export_dir, "entities_registry.json")
+        registry = {}
+        
+        # Load existing registry if it exists
+        if os.path.exists(registry_path):
+            with open(registry_path, "r", encoding="utf-8") as rf:
+                registry = json.load(rf)
+        
+        # Update/Add the current site
+        parsed_domain = urlparse(url).netloc
+        registry[parsed_domain] = {
+            "url": url,
+            "status": "INDEXED",
+            "pages_counted": len(processed_list),
+            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        # Save back to registry
+        with open(registry_path, "w", encoding="utf-8") as wf:
+            json.dump(registry, wf, indent=4)
+            
+    except Exception as e:
+        print(f"Registry update warning: {e}")
+
     return {
         "status": "COMPLETED",
         "message": "All set! I have finished reading the website and am ready to answer your questions.",

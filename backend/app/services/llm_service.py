@@ -1,9 +1,10 @@
 import json
+import os
 import re
 import cohere
 import asyncio
+from typing import Optional, List, Dict, Any, Tuple
 from langchain_groq import ChatGroq
-from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from app.services.vector_db import get_vector_store
@@ -14,7 +15,7 @@ settings = get_settings()
 # Initialize Cohere Client (Smarter, Enterprise-grade Reranking)
 co = cohere.Client(api_key=settings.COHERE_API_KEY)
 
-# GLOBAL INITIALIZATION (Preloading) to eliminate 3s Cold Start
+# GLOBAL INITIALIZATION (Preloading) 🚀
 # This ensures the LLM is ready BEFORE the first request arrives.
 print("Engine Warming Up: Preloading LLM & Embeddings...")
 llm = ChatGroq(
@@ -24,143 +25,79 @@ llm = ChatGroq(
     streaming=True
 )
 
-from typing import Optional
-
-def format_docs(docs):
+def format_docs(docs: List[Any]) -> str:
     """Utility to join document contents into a single string for the prompt."""
     return "\n\n".join(doc.page_content for doc in docs)
 
-def neural_rerank(inputs: dict) -> list:
+async def neural_rerank_async(query: str, docs: List[Any]) -> List[Tuple[Any, float]]:
     """
-    Uses Cohere's world-class Rerank API to select the absolute best context.
+    Asynchronous wrapper for Cohere's Rerank API to select the absolute best context.
     Returns a list of (document_object, relevance_score) tuples.
     """
-    query = inputs["question"]
-    docs = inputs["context"]
-    
     if not docs:
         return []
 
-    # Map docs to text snippets for Cohere
     texts = [doc.page_content for doc in docs]
     
     try:
-        # Call Cohere Rerank API (v3.5 is the latest and most accurate)
-        rerank_results = co.rerank(
+        # We run this in a thread to keep the event loop moving during the API call
+        rerank_results = await asyncio.to_thread(
+            co.rerank,
             query=query, 
             documents=texts, 
-            top_n=5, 
+            top_n=10, 
             model='rerank-v3.5'
         )
-        
-        # Return document objects paired with their neural relevancy scores
         return [(docs[res.index], res.relevance_score) for res in rerank_results.results]
-        
     except Exception as e:
         print(f"⚠️ Cohere Rerank Timeout/Error: {e}. Falling back to standard retrieval.")
-        # Fallback: Just return the first 5 docs with a dummy high-relevance score (1.0)
-        return [(doc, 1.0) for doc in docs[:5]]
+        return [(doc, 1.0) for doc in docs[:9]]
 
-def get_base_url_filter(url):
+def get_base_url_filter(url: str) -> Optional[Dict[str, Any]]:
     """Utility: Robust URL filter logic (Catches URL with AND without trailing slashes!)"""
     if not url: return None
     clean = url.rstrip('/')
     return {"base_url": {"$in": [clean, clean + '/']}}
 
-async def stream_answer(query: str, context_url: Optional[str] = None):
+async def retrieve_context(query: str, context_url: Optional[str] = None) -> Tuple[str, List[str]]:
     """
-    Asynchronous generator that streams LLM tokens to the client in real-time.
-    Uses Precision Filtering to only show highly relevant sources.
+    CORE RETRIEVAL ENGINE 🧠⚡
+    Performs high-performance Hybrid Search, Deduplication, and Neural Reranking.
+    Returns: (context_text, list_of_source_urls)
     """
-    # 1. INITIALIZE VECTOR STORE (FRESH PER SESSION) 🛡️⚡
-    # We do this inside the async loop to avoid "Session Closed" errors.
     vectorstore = get_vector_store()
     
-    prompt = ChatPromptTemplate.from_template("""
-    You are Swoop AI, a highly intelligent, polite technical assistant. 
-    You have access to a vast Global Knowledge Base of multiple websites.
-
-    STRICT RULES:
-    1. GREETINGS: If the user simply says hello, hi, thanks, or asks how you are, respond politely as an AI assistant.
-    2. FACTUAL BASIS: Base your answer EXCLUSIVELY on the provided context below.
-    3. MISSING DATA: If the user's question cannot be answered using the provided context, you MUST respond with: 
-       "I'm sorry, but I don't have enough information in my database to answer that question accurately. Is there anything else you'd like to know?"
-    You are Swoop AI, a highly intelligent assistant with access to a Global Knowledge Base.
-    
-    GUIDELINES:
-    1. If the user asks about a specific URL and you cannot find that exact link in context, use the BROAD knowledge about the company/domain to answer. 
-    2. Be helpful. If you have any information about the entity mentioned, provide it.
-    3. Use the provides context below for your answer.
-    
-    Context: {context}
-    Question: {question}
-    Answer:""")
-
-    # 1. VISUAL FEEDBACK (Initial) 🔍
-    # We send these as 'status' type so the UI can render them in a dedicated 'Thinking' bar.
-    yield json.dumps({"type": "status", "content": "🔍 Searching through knowledge..."}) + "\n"
-    # 1. HYBRID RETRIEVAL STRATEGY (Global + Targeted) 🕵️‍♂️
-    # Create a "Clean" query for semantic matching (remove noisy URLs)
+    # 1. CLEAN QUERY
     query_clean = re.sub(r'https?://[^\s,]+', '', query).strip()
     search_query = query_clean if query_clean else "Tell me about this website"
 
-    # Search Tasks Pool (We execute these in parallel for speed)
+    # 2. PARALLEL HYBRID SEARCH (Global + Targeted + Contact Fix) 🕵️‍♂️🎯
     search_tasks = []
-
-    # A. GLOBAL SEMANTIC SEARCH (Finding answers anywhere in the DB) 🌎
-    # This ensures we can answer about "Falconxoft" even while looking at "ezitech"
+    
+    # A. Global Semantic Search
     search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, search_query, k=25))
 
-    # B. TARGETED DOMAIN SEARCH (Filtering to the current site) 🎯
+    # B. Targeted Domain Search
     if context_url:
-        search_tasks.append(
-            asyncio.to_thread(
-                vectorstore.similarity_search, 
-                search_query, 
-                k=35, 
-                filter=get_base_url_filter(context_url)
-            )
-        )
+        search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, search_query, k=35, filter=get_base_url_filter(context_url)))
 
-    # C. Targeted URL fetch (if a specific link was pasted in query)
+    # C. Targeted URL fetch (for pasted links)
     extracted_urls = re.findall(r'(https?://[^\s,]+)', query)
-    if extracted_urls:
-        for url in extracted_urls:
-            search_tasks.append(
-                asyncio.to_thread(
-                    vectorstore.similarity_search, 
-                    query, 
-                    k=10, 
-                    filter={"url": url.rstrip('/')}
-                )
-            )
+    for url in extracted_urls:
+        search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, query, k=10, filter={"url": url.rstrip('/')}))
 
-    # D. FACTUAL QUERY EXPANSION (The "Contact Info" fix) 📞📍
+    # D. Factual Query Expansion (Contact Info Search)
     contact_keywords = ["contact", "email", "phone", "location", "address", "call", "reach"]
     if any(word in query.lower() for word in contact_keywords):
         factual_query = "email address phone number location office support contact us"
-        # Search globally for contact info too
         search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, factual_query, k=15))
         if context_url:
-             search_tasks.append(
-                asyncio.to_thread(
-                    vectorstore.similarity_search, 
-                    factual_query, 
-                    k=10, 
-                    filter=get_base_url_filter(context_url)
-                )
-            )
+            search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, factual_query, k=10, filter=get_base_url_filter(context_url)))
 
-    # EXECUTE ALL SIMULTANEOUSLY 🚀
+    # EXECUTE SEARCHES IN PARALLEL 🚀
     search_results = await asyncio.gather(*search_tasks)
     
-    yield json.dumps({"type": "status", "content": "🧠 Formulating thoughts..."}) + "\n"
-    await asyncio.sleep(0.05)
-
-    yield json.dumps({"type": "status", "content": "✨ Refining response..."}) + "\n"
-    await asyncio.sleep(0.05)
-    
-    # Flatten and Deduplicate
+    # 3. DEDUPLICATION
     raw_docs = [doc for result in search_results for doc in result]
     unique_docs = []
     seen_contents = set()
@@ -169,162 +106,111 @@ async def stream_answer(query: str, context_url: Optional[str] = None):
             unique_docs.append(doc)
             seen_contents.add(doc.page_content)
 
-    # 2. NEURAL RERANKING & THRESHOLDING (THE GOLDEN STANDARD) 📈🎯
-    # We ask Cohere to score the relevance of every chunk.
-    scored_docs = neural_rerank({"question": search_query, "context": unique_docs})
+    # 4. NEURAL RERANKING & THRESHOLDING 📉
+    scored_docs = await neural_rerank_async(search_query, unique_docs)
     
-    # 3. SEMANTIC FILTERING (Only keep high-relevance chunks)
-    # Threshold 0.3 = Keep anything relevant.
-    # We take up to 9 chunks to stay safe with the TPM limit.
     top_docs = []
     for doc, score in scored_docs:
         if score >= 0.3:
             top_docs.append(doc)
-        if len(top_docs) >= 9:
+        if len(top_docs) >= 12: # Standard depth for rich reports
             break
 
-    # FALLBACK: If no high scores (e.g. Greetings like "Hi"), provide 2 raw chunks so the AI has entity context
+    # Final Fallback
     if not top_docs and unique_docs:
-        top_docs = unique_docs[:2]
+        top_docs = unique_docs[:3]
 
     context_text = format_docs(top_docs)
-
-    # 4. SOURCE PRECISION FILTERING
-    is_greeting = query.strip().lower() in ["hi", "hello", "hey", "how are you", "thanks", "nice", "wow", "ok", "okay"]
-    sources = list(set([doc.metadata.get("url") for doc in top_docs])) if not is_greeting else []
+    sources = list(set([doc.metadata.get("url") for doc in top_docs]))
     
-    # 6. THE GOLDEN RULE PROMPT (Role-Based for Llama 3 Architecture) 🏛️🎯
+    return context_text, sources
+
+async def stream_answer(query: str, context_url: Optional[str] = None):
+    """
+    Asynchronous generator that streams LLM tokens to the client in real-time.
+    Uses Precision Filtering and Knowledge Inventory Awareness.
+    """
+    # 1. VISUAL FEEDBACK 🔍
+    yield json.dumps({"type": "status", "content": "🔍 Searching through knowledge..."}) + "\n"
+    
+    # 2. FETCH CORE CONTEXT 🧠⚡ (Unified Retrieval Logic)
+    context_text, sources = await retrieve_context(query, context_url)
+    
+    # 3. FETCH GLOBAL ENTITY INVENTORY (Source of Truth) 🗃️
+    inventory_list = []
+    # 5. FETCH GLOBAL ENTITY INVENTORY (Source of Truth) 🗃️
+    inventory_list = []
+    try:
+        # Robust Path-Finding Strategy: Base path on llm_service.py location
+        cur_dir = os.path.dirname(os.path.abspath(__file__)) 
+        # path is ../../scraped_data/entities_registry.json
+        backend_dir = os.path.dirname(os.path.dirname(cur_dir))
+        reg_path = os.path.join(backend_dir, "scraped_data", "entities_registry.json")
+        
+        if os.path.exists(reg_path):
+            with open(reg_path, "r", encoding="utf-8") as rf:
+                reg_data = json.load(rf)
+                inventory_list = sorted(list(reg_data.keys()))
+        else:
+            print(f" Registry missing at: {reg_path}")
+    except Exception as e:
+        print(f" Registry Error: {e}")
+    
+    total_entities = len(inventory_list)
+    inventory_str = ", ".join(inventory_list) if inventory_list else "None (System Warmup)"
+    
+    yield json.dumps({"type": "status", "content": "🧠 Formulating thoughts..."}) + "\n"
+    await asyncio.sleep(0.05)
+    yield json.dumps({"type": "status", "content": "✨ Refining response..."}) + "\n"
+
+    # 4. THE GOLDEN RULE PROMPT 🏛️🎯
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are Swoop AI, an elite Intelligence Engine. Deliver the "Perfect Response" by adhering exclusively to the provided <knowledge_base>.
+        ("system", f"""You are Swoop AI, an elite Intelligence Engine. 
+
+SUPREME SOURCE OF TRUTH (DATABASE STATS):
+- TOTAL ENTITIES INDEXED: {total_entities}
+- FULL DOMAIN LIST: [{inventory_str}]
+
+CRITICAL INSTRUCTIONS:
+1. KB META-QUERIES: If the user asks "how many," "which," or "list" companies you have, DISREGARD the <knowledge_base> and use the SUPREME SOURCE OF TRUTH above (e.g. "I currently contain intelligence on {total_entities} companies...").
+2. DATA GAPS: If a user asks about a company NOT in the DOMAIN LIST, state you haven't read that site.
+3. ZERO HALLUCINATION: Build answers EXCLUSIVELY on the <knowledge_base>.
+4. DECLINE GRACEFULLY: If the <knowledge_base> does not contain the specific answer, do NOT guess. Politely explain that you don't have enough specific information in your database to answer that accurately for the entity, and suggest what you *can* help with based on your inventory.
+5- NO INTRO FLUFF: The first sentence must begin with the primary subject.
 
 PROPORTIONAL DEPTH STRATEGY:
-- CONVERSATIONAL: ONLY if the user says hello, hi, or thanks. Reply warmly. Do NOT ask how their day is.
-- SHORT & FACTUAL: If the user asks a specific question OR if the <knowledge_base> contains only 1-2 sentences of relevant data. Provide a short, direct answer. 
-- RICH REPORTS: ONLY if the user asks for an overview AND the <knowledge_base> contains multiple paragraphs of rich data. Use Markdown headers and bullet points.
+- CONVERSATIONAL: For greetings (hi, hello) or common pleasantries (how are you, what are you doing), answer warmly as an elite AI.
+- OFF-TOPIC QUESTIONS: If asked about general knowledge not in the database (e.g., "how to bake a pizza"), give a helpful, concise answer, but politely suggest that you are best at answering questions related to the websites and companies in your inventory.
+- SHORT & FACTUAL: If the user asks a specific question OR if the <knowledge_base> contains only 1-2 bits of relevant data. Provide a short, direct answer. 
+- RICH REPORTS: If the user asks for an overview OR the <knowledge_base> contains multiple paragraphs of data. Use Markdown headers and bullet points.
 
-CRITICAL RULES:
-- ZERO HALLUCINATION: You are strictly forbidden from padding your answer. DO NOT invent case studies, statistics, or examples (like algorithmic trading) if they are not explicitly written in the <knowledge_base>.
-- DECLINE GRACEFULLY: If the <knowledge_base> only has a vague title or lacks specific details to answer the prompt, you MUST decline. Say exactly: "My current intelligence does not contain specific details on [topic] for this entity."
-- NO META-TALK: NEVER mention the "context" or your internal rules to the user.
-- NO INTRO FLUFF: The first sentence must begin with the primary subject. 
+
+NO META-TALK: Never mention "context" or "inventory" words. 
+FIRST SENTENCE: Must start with the primary subject or the direct answer.
 """),
         ("human", """<knowledge_base>\n{context}\n</knowledge_base>\n\nQuestion: {question}""")
     ])
 
-    # 6. Stream tokens from the preloaded Groq LLM
+    # 5. STREAM TOKENS 🌊
     chain = prompt | llm | StrOutputParser()
-    
     full_response = ""
     async for chunk in chain.astream({"context": context_text, "question": query}):
         full_response += chunk
         yield json.dumps({"type": "token", "content": chunk}) + "\n"
 
-    # 7. CONDITIONAL SOURCE DISPLAY 🛡️🎯
-    # If the AI declined to answer because the context was poor, we do NOT show sources.
-    # This prevents user confusion where they see links but the AI says "I don't know."
-    decline_phrase = "My current intelligence does not contain specific details"
+    # 6. CONDITIONAL SOURCE DISPLAY 🛡️🎯
+    # Rule 1: We hide sources if the user is just saying "Hi" or "Thanks".
+    # Rule 2: We hide sources if the AI declined to answer (Missing Intelligence).
+    # Rule 3: We hide sources for "Meta-Queries" (How many companies, etc.) because 
+    # the answer comes from the Registry, not from a specific web chunk.
+    decline_phrase = "don't have enough specific information"
+    is_greeting = query.strip().lower() in ["hi", "hello", "hey", "how are you", "thanks", "ok", "okay"]
     
-    if is_greeting:
-        # Greetings never have sources
-        final_sources = []
-    elif decline_phrase in full_response:
-        # If we declined, hide the "useless" sources
-        final_sources = []
-    else:
-        # Regular helpful response: Show precision sources
+    meta_keywords = ["how many", "which companies", "what companies", "total", "inventory", "count", "database", "which sites"]
+    is_meta_query = any(word in query.lower() for word in meta_keywords)
+    
+    final_sources = []
+    if not is_greeting and not is_meta_query and decline_phrase not in full_response.lower():
         final_sources = sources
 
     yield json.dumps({"type": "metadata", "sources": final_sources}) + "\n"
-
-async def generate_answer(query: str, context_url: Optional[str] = None):
-    """
-    Normal synchronous version for internal API calls.
-    Allows for global knowledge base search while prioritizing the current context.
-    """
-    # 1. CLEAN QUERY
-    query_clean = re.sub(r'https?://[^\s,]+', '', query).strip()
-    search_query = query_clean if query_clean else "Tell me about this website"
-    
-    # 1. INITIALIZE VECTOR STORE
-    vectorstore = get_vector_store()
-    raw_docs = []
-
-    # A. Global Semantic search (🌎 Finding patterns anywhere)
-    global_docs = vectorstore.similarity_search(search_query, k=20)
-    raw_docs.extend(global_docs)
-
-    # B. Targeted Domain search (🎯 Only the current site)
-    if context_url:
-        targeted_docs = vectorstore.similarity_search(
-            search_query, 
-            k=25, 
-            filter=get_base_url_filter(context_url)
-        )
-        raw_docs.extend(targeted_docs)
-    
-    # C. Targeted URL fetch
-    extracted_urls = re.findall(r'(https?://[^\s,]+)', query)
-    if extracted_urls:
-        for url in extracted_urls:
-            clean_url = url.rstrip('/')
-            url_docs = vectorstore.similarity_search(query, k=10, filter={"url": clean_url})
-            raw_docs.extend(url_docs)
-
-    # D. Deduplicate
-    unique_docs = []
-    seen_contents = set()
-    for doc in raw_docs:
-        if doc.page_content not in seen_contents:
-            unique_docs.append(doc)
-            seen_contents.add(doc.page_content)
-
-    # 2. NEURAL RERANKING
-    scored_docs = neural_rerank({"question": search_query, "context": unique_docs})
-    
-    # 3. DIVERSITY SELECTION (The "Global Awareness" Fix) 🧩
-    diverse_docs = []
-    url_counts = {}
-    for doc, score in scored_docs:
-        url = doc.metadata.get("url", "unknown")
-        url_counts[url] = url_counts.get(url, 0) + 1
-        if url_counts[url] <= 3:
-            diverse_docs.append(doc)
-            
-    top_docs = diverse_docs[:12]
-    context_text = format_docs(top_docs)
-
-    # 4. DYNAMIC INTELLIGENCE PROMPT 🏗️
-    prompt = ChatPromptTemplate.from_template("""
-    You are Swoop AI, a professional Intelligence Assistant. 
-    Your mission is to provide an elite, multi-dimensional report on the entity or website in question.
-
-    DYNAMIC RESPONSE STRATEGY:
-    1. DIRECT FOCUSED ANSWER: If the user asks a specific question about a fact (location, services, etc.), answer it IMMEDIATELY and CLEARLY at the top.
-    2. PROFESSIONAL NARRATIVE OVERVIEW: For general inquiries ("Tell me about..."), deliver a comprehensive report:
-       - CORE IDENTITY: Synthesize a strong, professional description of the subject.
-       - SERVICES & EXPERTISE: Detail their core offerings and technology focus with precision.
-       - CLIENTS & PARTNERS: Mention key organizations found EXPLICITLY in the provided context.
-       - VALUES & IDENTITY: Describe the subject's philosophy and "professional character."
-
-    STRICT RULES:
-    - NO ROBOTIC ROBOT-SPEAK: Do NOT use phrases like "Swoop AI identifies...", "Based on...", or "The context does not state...". 
-    - START DIRECTLY: The first sentence must begin with the subject or the answer.
-    - EXCLUSIVE CONTEXT: Do NOT mention any facts or client names (like "Coca-Cola") not found in the context.
-    - BE DESCRIPTIVE: Use high-level, professional storytelling. Avoid simple bullet lists where possible for a premium experience.
-
-    Context: {context}
-    Question: {question}
-    Answer:""")
-
-    # 5. Generate Answer
-    chain = prompt | llm | StrOutputParser()
-    answer = await chain.ainvoke({"context": context_text, "question": query})
-    
-    # 6. Extract Sources
-    sources = list(set([doc.metadata.get("url") for doc in top_docs]))
-    
-    return {"answer": answer, "sources": sources}
-
-
-
-

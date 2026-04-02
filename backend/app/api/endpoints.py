@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from app.core.celery_app import celery_app
 from celery.result import AsyncResult
-from app.services.llm_service import generate_answer, stream_answer
+from app.services.llm_service import stream_answer
 from app.schemas.request import ProcessURLRequest, ChatRequest
 from app.schemas.response import TaskResponse, ChatResponse
 from app.tasks.worker import process_url_task
