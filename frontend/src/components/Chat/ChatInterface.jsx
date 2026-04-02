@@ -28,6 +28,17 @@ const ChatInterface = ({ taskState, setTaskState }) => {
     }
   }, [messages, isTyping, taskState, isKnowledgeReady]);
 
+  // Auto-inject a 'swoop' message when taskState arrives from an external source (e.g. HomePage)
+  useEffect(() => {
+    if (taskState?.taskId) {
+      const alreadyExists = messages.some(m => m.role === 'swoop' && m.taskId === taskState.taskId);
+      if (!alreadyExists) {
+        setMessages(prev => [...prev, { role: 'swoop', taskId: taskState.taskId }]);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskState?.taskId]);
+
   const handleSend = async (e) => {
     e.preventDefault();
     if (!query.trim()) return;
@@ -36,7 +47,7 @@ const ChatInterface = ({ taskState, setTaskState }) => {
       setSwoopLoading(true);
       try {
         const data = await scraperService.processUrl(query.trim());
-        setTaskState({
+        const newTaskState = {
           taskId: data.task_id,
           url: query.trim(),
           status: 'PENDING',
@@ -44,7 +55,10 @@ const ChatInterface = ({ taskState, setTaskState }) => {
           pagesMapped: 0,
           processedPages: [],
           chatReady: false
-        });
+        };
+        setTaskState(newTaskState);
+        // Insert the Swoop card into the messages flow at this exact position
+        setMessages(prev => [...prev, { role: 'swoop', taskId: data.task_id }]);
         setQuery('');
         setIsSwoopMode(false);
       } catch (error) {
@@ -167,17 +181,6 @@ const ChatInterface = ({ taskState, setTaskState }) => {
         {/* MESSAGES */}
         <div className="flex flex-col pb-10">
 
-          {/* DISCOVERY CARD AS "SYSTEM MESSAGE 0" */}
-          {taskState.taskId && (
-            <div className="w-full pt-8 pb-4">
-              <div className="max-w-3xl mx-auto w-full px-4 flex justify-end">
-                <SwoopDiscoveryCard
-                  taskId={taskState.taskId}
-                  onComplete={handleDiscoveryComplete}
-                />
-              </div>
-            </div>
-          )}
 
           {messages.map((msg, idx) => (
             msg.role === 'user' ? (
@@ -187,6 +190,16 @@ const ChatInterface = ({ taskState, setTaskState }) => {
                   <div className="bg-slate-100 text-slate-800 px-5 py-3 rounded-2xl max-w-[80%] text-[15px] font-medium leading-relaxed">
                     {msg.content}
                   </div>
+                </div>
+              </div>
+            ) : msg.role === 'swoop' ? (
+              // SWOOP DISCOVERY CARD - Inline in message flow
+              <div key={idx} className="w-full pt-8 pb-4">
+                <div className="max-w-3xl mx-auto w-full px-4 flex justify-end">
+                  <SwoopDiscoveryCard
+                    taskId={msg.taskId}
+                    onComplete={handleDiscoveryComplete}
+                  />
                 </div>
               </div>
             ) : (
@@ -209,7 +222,7 @@ const ChatInterface = ({ taskState, setTaskState }) => {
                       {msg.content}
                     </div>
 
-                    {/* Sources Anchor Box - Only show after content starts appearring */}
+                    {/* Sources Anchor Box - Only show after content starts appearing */}
                     {msg.sources && msg.sources.length > 0 && msg.content && (
                       <div className="mt-4 flex flex-wrap gap-2">
                         {msg.sources.map((url, sIdx) => {
@@ -236,6 +249,8 @@ const ChatInterface = ({ taskState, setTaskState }) => {
               </div>
             )
           ))}
+
+
 
           {/* Typing Indicator - Only show while we are waiting for the first chunk */}
           {isTyping && messages[messages.length - 1]?.role !== 'ai' && (
