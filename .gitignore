@@ -1,0 +1,50 @@
+# OS specific files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment variables
+.env
+*.env
+backend/.env
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+backend/venv/
+backend/__pycache__/
+backend/app/__pycache__/
+
+# Project specific
+dump.rdb
+backend/scraped_data/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
