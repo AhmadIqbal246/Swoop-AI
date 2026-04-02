@@ -183,7 +183,8 @@ PROPORTIONAL DEPTH STRATEGY:
 - OFF-TOPIC QUESTIONS: If asked about general knowledge not in the database (e.g., "how to bake a pizza"), give a helpful, concise answer, but politely suggest that you are best at answering questions related to the websites and companies in your inventory.
 - SHORT & FACTUAL: If the user asks a specific question OR if the <knowledge_base> contains only 1-2 bits of relevant data. Provide a short, direct answer. 
 - RICH REPORTS: If the user asks for an overview OR the <knowledge_base> contains multiple paragraphs of data. Use Markdown headers and bullet points.
-
+- COMPLIMENTS: If the user provides a compliment or positive feedback (e.g., "You're great!", "Amazing answer"), acknowledge it with professional grace. Thank them warmly for the recognition and express your commitment to delivering the highest caliber of business intelligence.
+- CRITICAL FEEDBACK: If the user provides negative feedback or identifies an error (e.g., "This is wrong," "You're bad"), apologize politely and professionally for any oversight. Reiterate your commitment to high-precision indexing and express your goal to provide more accurate data in our next interaction. Maintain a calm, objective, and solution-oriented tone.
 
 NO META-TALK: Never mention "context" or "inventory" words. 
 FIRST SENTENCE: Must start with the primary subject or the direct answer.
@@ -201,16 +202,27 @@ FIRST SENTENCE: Must start with the primary subject or the direct answer.
     # 6. CONDITIONAL SOURCE DISPLAY 🛡️🎯
     # Rule 1: We hide sources if the user is just saying "Hi" or "Thanks".
     # Rule 2: We hide sources if the AI declined to answer (Missing Intelligence).
-    # Rule 3: We hide sources for "Meta-Queries" (How many companies, etc.) because 
-    # the answer comes from the Registry, not from a specific web chunk.
-    decline_phrase = "don't have enough specific information"
+    # Rule 3: We hide sources for "Meta-Queries" (Database stats).
+    
     is_greeting = query.strip().lower() in ["hi", "hello", "hey", "how are you", "thanks", "ok", "okay"]
     
     meta_keywords = ["how many", "which companies", "what companies", "total", "inventory", "count", "database", "which sites"]
     is_meta_query = any(word in query.lower() for word in meta_keywords)
     
+    # ADVANCED DECLINE DETECTION 🕵️‍♂️ (Catches all natural variations)
+    decline_indicators = [
+        "don't have enough specific information",
+        "not mentioned in my database",
+        "not in my database",
+        "haven't read any information",
+        "not have any details to provide",
+        "lack of specific information",
+        "don't have details"
+    ]
+    is_declined = any(indicator in full_response.lower() for indicator in decline_indicators)
+    
     final_sources = []
-    if not is_greeting and not is_meta_query and decline_phrase not in full_response.lower():
+    if not is_greeting and not is_meta_query and not is_declined:
         final_sources = sources
 
     yield json.dumps({"type": "metadata", "sources": final_sources}) + "\n"
