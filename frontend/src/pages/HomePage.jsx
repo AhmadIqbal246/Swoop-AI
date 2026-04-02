@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import UrlInput from '../components/Discovery/UrlInput';
-import SwoopStatus from '../components/Discovery/SwoopStatus';
 import { scraperService } from '../services/api';
 import { useNavigate } from 'react-router-dom';
 
@@ -53,11 +52,7 @@ const HomePage = ({ taskState, setTaskState }) => {
   
               <UrlInput onStartSwooping={handleStartSwooping} isLoading={loading} />
   
-              <SwoopStatus 
-                status={taskState.status} 
-                message={taskState.message} 
-                activePageCount={taskState.pagesMapped} 
-              />
+
           </div>
         </main>
     );
