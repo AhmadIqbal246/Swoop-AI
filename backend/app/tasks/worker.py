@@ -36,17 +36,25 @@ def process_url_task(self, url: str):
     
     # EXCLUSION LIST: Pages we KNOW are useless for an AI knowledge base
     # Everything else discovered on the homepage will be scraped.
+    # Note: '#' anchors are already stripped by the scraper, no need to exclude here.
     excluded_patterns = [
         "privacy", "terms", "cookie", "legal", "disclaimer",
         "login", "signin", "signup", "register", "logout",
         "cart", "checkout", "account", "password", "reset",
         ".pdf", ".zip", ".png", ".jpg", ".jpeg", ".gif", ".svg",
-        "mailto:", "tel:", "javascript:", "wp-admin", "wp-login",
-        "#", "?utm_", "?ref=", "?source="
+        "javascript:", "wp-admin", "wp-login",
+        "?utm_", "?ref=", "?source="
     ]
+    
+    # Normalize the homepage URL for deduplication
+    homepage_normalized = url.rstrip("/").lower()
     
     for link in init_data.get("links", []):
         full_link = link["url"]
+        
+        # Skip if it resolves to the same page as the homepage (pure anchor links)
+        if full_link.rstrip("/").lower() == homepage_normalized:
+            continue
         
         # Skip if it's a junk/excluded link
         is_excluded = any(pattern in full_link.lower() for pattern in excluded_patterns)
