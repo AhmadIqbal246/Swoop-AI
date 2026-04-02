@@ -10,9 +10,9 @@ const ChatInterface = ({ taskState, setTaskState }) => {
   const scrollRef = useRef(null);
 
   // DATA HOOKS 🎣
-  const { messages, setMessages, isTyping, sendMessage, addSwoopCard } = useChatStream(taskState?.url);
-  
-  const { startSwoop, isPending: isSwoopLoading } = useSwoop();
+  const { messages, setMessages, isTyping, sendMessage, addSwoopCard, stopStreaming } = useChatStream(taskState?.url);
+
+  const { startSwoop, stopSwoop, isPending: isSwoopLoading } = useSwoop();
 
   const PROCESSING_STATES = ['PENDING', 'PROGRESS', 'STARTING'];
   const isActivelyProcessing = taskState?.taskId && PROCESSING_STATES.includes(taskState?.status);
@@ -34,11 +34,11 @@ const ChatInterface = ({ taskState, setTaskState }) => {
     if (taskState?.taskId && !processedTasks.current.has(taskState.taskId)) {
       const alreadyExists = messages.some(m => m.role === 'swoop' && m.taskId === taskState.taskId);
       if (!alreadyExists) {
-        addSwoopCard(taskState.taskId);
+        addSwoopCard(taskState.taskId, taskState.url);
         processedTasks.current.add(taskState.taskId);
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskState?.taskId]);
 
   useEffect(() => {
@@ -87,7 +87,7 @@ const ChatInterface = ({ taskState, setTaskState }) => {
     }
 
     if (!isKnowledgeReady) return;
-    
+
     const currentQuery = query;
     setQuery('');
     await sendMessage(currentQuery);
@@ -137,6 +137,7 @@ const ChatInterface = ({ taskState, setTaskState }) => {
                 <div className="max-w-3xl mx-auto w-full px-4 flex justify-end">
                   <SwoopDiscoveryCard
                     taskId={msg.taskId}
+                    url={msg.url}
                     onComplete={handleDiscoveryComplete}
                   />
                 </div>
@@ -157,7 +158,7 @@ const ChatInterface = ({ taskState, setTaskState }) => {
 
                   {/* Content & Intelligence Bar */}
                   <div className="flex-1 space-y-4">
-                    
+
                     {/* THOUGHT PROCESS BAR - Shows the engine working behind the scenes */}
                     {msg.status && (
                       <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-100/80 border border-slate-200/50 rounded-lg w-max animate-pulse">
@@ -169,15 +170,15 @@ const ChatInterface = ({ taskState, setTaskState }) => {
                     )}
 
                     <div className="text-[15px] leading-relaxed text-slate-700 font-medium">
-                      <ReactMarkdown 
+                      <ReactMarkdown
                         components={{
-                          p: ({node, ...props}) => <p className="mb-4 last:mb-0" {...props} />,
-                          strong: ({node, ...props}) => <strong className="font-bold text-slate-900" {...props} />,
-                          ul: ({node, ...props}) => <ul className="list-disc marker:text-slate-400 pl-5 space-y-1.5 mb-4 last:mb-0 mt-2" {...props} />,
-                          li: ({node, ...props}) => <li className="pl-1" {...props} />,
-                          h1: ({node, ...props}) => <h1 className="text-lg font-bold text-slate-900 mb-3 mt-6 first:mt-0" {...props} />,
-                          h2: ({node, ...props}) => <h2 className="text-[16px] font-bold text-slate-900 mb-2 mt-5 first:mt-0" {...props} />,
-                          h3: ({node, ...props}) => <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-2 mt-5 first:mt-0" {...props} />
+                          p: ({ node, ...props }) => <p className="mb-4 last:mb-0" {...props} />,
+                          strong: ({ node, ...props }) => <strong className="font-bold text-slate-900" {...props} />,
+                          ul: ({ node, ...props }) => <ul className="list-disc marker:text-slate-400 pl-5 space-y-1.5 mb-4 last:mb-0 mt-2" {...props} />,
+                          li: ({ node, ...props }) => <li className="pl-1" {...props} />,
+                          h1: ({ node, ...props }) => <h1 className="text-lg font-bold text-slate-900 mb-3 mt-6 first:mt-0" {...props} />,
+                          h2: ({ node, ...props }) => <h2 className="text-[16px] font-bold text-slate-900 mb-2 mt-5 first:mt-0" {...props} />,
+                          h3: ({ node, ...props }) => <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide mb-2 mt-5 first:mt-0" {...props} />
                         }}
                       >
                         {msg.content}
@@ -210,7 +211,7 @@ const ChatInterface = ({ taskState, setTaskState }) => {
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                               </svg>
                             </summary>
-                            
+
                             <div className="absolute left-0 sm:left-auto pt-2 z-10 w-max max-w-[280px]">
                               <div className="flex flex-wrap gap-2 p-3 bg-white border border-slate-200 shadow-xl rounded-xl">
                                 {msg.sources.slice(2).map((url, sIdx) => {
@@ -265,10 +266,10 @@ const ChatInterface = ({ taskState, setTaskState }) => {
             <input
               type="text"
               placeholder={
-                isSwoopMode 
-                  ? "Enter website URL to swoop..." 
-                  : isActivelyProcessing 
-                    ? "Mapping context... engine is busy 🕵️‍♂️" 
+                isSwoopMode
+                  ? "Enter website URL to swoop... e.g https://www.google.com"
+                  : isActivelyProcessing
+                    ? "Mapping context... engine is busy 🕵️‍♂️"
                     : "Message..."
               }
               value={query}
@@ -279,40 +280,55 @@ const ChatInterface = ({ taskState, setTaskState }) => {
                   ? `bg-white border-slate-200 focus:ring-4 focus:ring-slate-100 text-slate-800 ${isSwoopMode ? 'border-primary/30 focus:border-primary/50' : 'focus:border-slate-300'}`
                   : 'bg-slate-50 border-slate-100 opacity-60 cursor-not-allowed italic text-slate-500'}`}
             />
-            <button
-              type="submit"
-              disabled={(isSwoopMode ? !query.trim() : !isKnowledgeReady || !query.trim()) || isSwoopLoading}
-              className={`absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-full transition-all
-                ${(isSwoopMode || isKnowledgeReady) && query.trim() && !isSwoopLoading
-                  ? 'bg-primary text-white hover:opacity-90 pointer-events-auto shadow-sm'
-                  : 'bg-slate-100 text-slate-300 pointer-events-none'}`}
-            >
-              {isSwoopLoading ? (
-                <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-              ) : (
-                <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  {isSwoopMode ? (
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 4v16m8-8H4" />
-                  ) : (
+            {/* STOP BUTTON - Universal Stop for Chat & Swooping */}
+            {(isTyping && messages[messages.length - 1]?.role === 'ai') || isActivelyProcessing ? (
+              <button
+                type="button"
+                onClick={() => {
+                  if (isTyping) {
+                    stopStreaming();
+                  } else if (isActivelyProcessing) {
+                    stopSwoop(taskState.taskId);
+                    setTaskState(prev => ({ ...prev, status: 'REVOKED', message: 'Swoop cancelled by user.' }));
+                  }
+                }}
+                className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-lg bg-slate-900 text-white hover:bg-slate-800 transition-all shadow-sm z-10"
+                title="Stop process"
+              >
+                <div className="w-2.5 h-2.5 bg-white rounded-sm"></div>
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={(isSwoopMode ? !query.trim() : !isKnowledgeReady || !query.trim()) || isSwoopLoading}
+                className={`absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-full transition-all
+                  ${(isSwoopMode || isKnowledgeReady) && query.trim() && !isSwoopLoading
+                    ? 'bg-primary text-white hover:opacity-90 pointer-events-auto shadow-sm'
+                    : 'bg-slate-100 text-slate-300 pointer-events-none'}`}
+              >
+                {isSwoopLoading ? (
+                  <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 10l7-7m0 0l7 7m-7-7v18" />
-                  )}
-                </svg>
-              )}
-            </button>
+                  </svg>
+                )}
+              </button>
+            )}
           </form>
 
           {/* Mode Switcher Link/Globe Icon - Moved to Right */}
           <button
             onClick={() => setIsSwoopMode(!isSwoopMode)}
             className={`flex-shrink-0 w-11 h-11 flex items-center justify-center rounded-full transition-all duration-300 border shadow-sm
-              ${isSwoopMode 
-                ? 'bg-primary text-white border-primary shadow-primary/20 scale-110' 
+              ${isSwoopMode
+                ? 'bg-primary text-white border-primary shadow-primary/20 scale-110'
                 : 'bg-white text-slate-400 border-slate-200 hover:text-primary hover:border-primary/30'}`}
             title={isSwoopMode ? "Switch to Chat" : "Switch to Swoop (Index URL)"}
           >
-             <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-             </svg>
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
           </button>
         </div>
         <p className="text-center text-[10px] text-slate-400 font-medium mt-3 tracking-wide bg-white/50 backdrop-blur-sm rounded-full py-1 px-4 mx-auto block w-max">

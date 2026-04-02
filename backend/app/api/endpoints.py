@@ -35,9 +35,18 @@ async def get_task_status(task_id: str):
     
     if result.status == "SUCCESS":
         task_result = result.result or {}
-        response.status = "COMPLETED" # Normalize for high-end UI detection
-        response.message = task_result.get('message', 'Indexing completed!')
-        response.processed_pages = task_result.get('processed_pages', [])
+        # 🛡️ CATCH SOFT-REVOKES (When the worker stopped itself)
+        if task_result.get('status') == 'REVOKED':
+            response.status = "REVOKED"
+            response.message = task_result.get('message', 'Process stopped.')
+            response.processed_pages = task_result.get('processed_pages', [])
+        else:
+            response.status = "COMPLETED" # Normalize for high-end UI detection
+            response.message = task_result.get('message', 'Indexing completed!')
+            response.processed_pages = task_result.get('processed_pages', [])
+    elif result.status == "REVOKED":
+        response.status = "REVOKED"
+        response.message = "The process was revoked."
     elif result.status == "PENDING":
         response.status = "PENDING"
         response.message = "Initializing the Parallel Engine..."
@@ -45,13 +54,34 @@ async def get_task_status(task_id: str):
         response.status = "FAILURE"
         response.message = f"Process failed: {str(result.result)}"
     elif result.status == "PROGRESS":
-        # Supports Celery custom progress if you use self.update_state in task
         task_result = result.result or {}
         response.status = "PROGRESS"
         response.message = task_result.get('message', 'Mapping content...')
         response.processed_pages = task_result.get('processed_pages', [])
     
     return response
+
+@router.post("/stop-task/{task_id}", response_model=TaskResponse)
+async def stop_task(task_id: str):
+    """
+    Aborts a background task using a Soft-Revoke mechanism.
+    Sets a cancellation flag in Redis that the worker checks periodically.
+    """
+    # 1. Standard Celery Revoke (Stops task if it hasn't started yet)
+    celery_app.control.revoke(task_id)
+    
+    # 2. Redis Kill-Switch (Signals a running thread to stop itself)
+    # We use the existing Redis backend client to set the flag
+    try:
+        celery_app.backend.client.set(f"cancelled:{task_id}", "true", ex=3600)
+    except Exception as e:
+        print(f"Warning: Could not set Redis kill-switch: {e}")
+
+    return TaskResponse(
+        task_id=task_id,
+        status="REVOKED",
+        message="Stop signal sent to the indexing engine."
+    )
 
 @router.post("/chat")
 async def chat(data: ChatRequest):

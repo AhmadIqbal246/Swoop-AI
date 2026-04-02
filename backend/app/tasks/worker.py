@@ -15,9 +15,22 @@ def process_url_task(self, url: str):
     """
     STRUCTURAL SITE MAPPER:
     Creates a High-Quality, Page-Aware Master Knowledge Base from an entire site.
+    Supports Soft-Revoke on Windows/Threads.
     """
     logs = []
+    task_id = self.request.id
+
+    def is_cancelled():
+        """Checks if the user has requested to stop this specific task."""
+        try:
+            # Check the Redis Kill-Switch we set in the API endpoint
+            val = celery_app.backend.client.get(f"cancelled:{task_id}")
+            return val == b"true"
+        except Exception:
+            return False
+
     def emit_log(msg: str, pages: list = None):
+        if is_cancelled(): return # Don't update state if we are about to exit
         # Only append distinct general phases to avoid explosion on large loops of the same string
         if not logs or logs[-1] != msg:
             logs.append(msg)
@@ -26,6 +39,9 @@ def process_url_task(self, url: str):
             'logs': logs,
             'processed_pages': pages or []
         })
+
+    if is_cancelled(): 
+        return {"status": "REVOKED", "message": "Task cancelled before starting."}
 
     emit_log(f'Navigating to {url}...')
     
@@ -46,6 +62,8 @@ def process_url_task(self, url: str):
     } 
     
     init_res = asyncio.run(scrape_urls_parallel([url], headless=False))
+    if is_cancelled(): return {"status": "REVOKED", "message": "Swoop aborted during discovery."}
+    
     init_data = init_res[0]
     
     # EXCLUSION LIST: Pages we KNOW are useless for an AI knowledge base
@@ -90,6 +108,8 @@ def process_url_task(self, url: str):
     emit_log(f'Analyzing site architecture ({total_found} pages)...')
     all_results = asyncio.run(scrape_urls_parallel(target_urls, headless=False))
     
+    if is_cancelled(): return {"status": "REVOKED", "message": "Swoop aborted during parallel mapping."}
+    
     # 3. KNOWLEDGE CONSOLIDATION & LIVE REPORTING
     master_text = ""
     export_dir = "scraped_data"
@@ -98,6 +118,9 @@ def process_url_task(self, url: str):
     processed_list = []
     
     for index, res in enumerate(all_results):
+        # Final safety check inside the processing loop
+        if is_cancelled(): return {"status": "REVOKED", "message": "Swoop aborted during data consolidation."}
+        
         final_url = res.get("final_url")
         original_url = res.get("original_url")
         title = res.get("title", "Unknown Page")
@@ -135,6 +158,8 @@ def process_url_task(self, url: str):
         f.write(master_text)
         
     # 4. STRUCTURAL BATCH PROCESSING & VECTORIZATION
+    if is_cancelled(): return {"status": "REVOKED", "message": "Swoop aborted before vectorization."}
+    
     emit_log('Processing site data...', processed_list)
     
     structural_chunks = chunk_text_structurally(master_text, source_url=url)
@@ -150,6 +175,7 @@ def process_url_task(self, url: str):
         # Get baseline vector count before upsert was called (it was just called, so poll for change)
         deadline = time.time() + 30  # wait up to 30 seconds
         while time.time() < deadline:
+            if is_cancelled(): return {"status": "REVOKED", "message": "Swoop aborted during index synchronization."}
             stats = index.describe_index_stats()
             total_vectors = stats.get('total_vector_count', 0)
             if total_vectors > 0:

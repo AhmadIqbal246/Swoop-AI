@@ -1,9 +1,13 @@
 import React, { useState } from 'react';
 import { useTaskStatus } from '../../hooks/useTaskStatus';
 
-const SwoopDiscoveryCard = ({ taskId, onComplete }) => {
+const SwoopDiscoveryCard = ({ taskId, url, onComplete }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   
+  // Extract Domain for User Clarity 🌐
+  let domain = "Target Site";
+  try { domain = new URL(url).hostname; } catch {}
+
   // CONSUME THE CUSTOM HOOK 🧪
   const { 
     status, 
@@ -11,10 +15,9 @@ const SwoopDiscoveryCard = ({ taskId, onComplete }) => {
     logs,
     processedPages, 
     isWorking, 
-    isSuccess 
+    isSuccess,
+    isRevoked 
   } = useTaskStatus(taskId, onComplete);
-
-  const cardStatus = isSuccess ? 'SUCCESS' : status === 'FAILURE' ? 'FAILURE' : 'PROGRESS';
 
   return (
     <div className="w-fit mb-8 animate-fade-in flex flex-col items-end">
@@ -29,8 +32,12 @@ const SwoopDiscoveryCard = ({ taskId, onComplete }) => {
             </svg>
           ) : isSuccess ? (
             <svg className="w-4 h-4 text-green-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1  1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
             </svg>
+          ) : isRevoked ? (
+            <div className="w-4 h-4 border-2 border-slate-300 rounded-full flex items-center justify-center">
+               <div className="w-1.5 h-1.5 bg-slate-300 rounded-sm"></div>
+            </div>
           ) : (
             <svg className="w-4 h-4 text-red-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -41,7 +48,7 @@ const SwoopDiscoveryCard = ({ taskId, onComplete }) => {
         {/* Text */}
         <div className="flex items-center space-x-3">
           <span className="text-[14px] font-medium text-slate-700">
-            {isWorking ? 'Analyzing site content...' : isSuccess ? 'Knowledge mapped! You can ask questions now.' : 'Analysis failed'}
+            {isWorking ? <span>Swooping <b className="text-primary font-bold">{domain}</b>...</span> : isSuccess ? <span>Knowledge mapped! ({domain})</span> : isRevoked ? <span>Analysis stopped ({domain})</span> : <span>Analysis failed ({domain})</span>}
           </span>
           
           <button 
@@ -63,14 +70,14 @@ const SwoopDiscoveryCard = ({ taskId, onComplete }) => {
             <div className="space-y-2">
               {logs.map((log, idx) => (
                 <div key={idx} className="flex items-start space-x-2 text-xs font-medium text-slate-500">
-                  <div className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${idx === logs.length - 1 && isWorking ? 'bg-primary animate-pulse' : 'bg-green-400'}`}></div>
+                  <div className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${idx === logs.length - 1 && isWorking ? 'bg-primary animate-pulse' : isRevoked ? 'bg-slate-300' : 'bg-green-400'}`}></div>
                   <p className="max-w-[260px] italic leading-tight">"{log}"</p>
                 </div>
               ))}
             </div>
           ) : (
             <div className="flex items-center space-x-2 text-xs font-medium text-slate-500">
-              <div className={`w-1.5 h-1.5 rounded-full ${isWorking ? 'bg-primary animate-pulse' : isSuccess ? 'bg-green-400' : 'bg-red-400'}`}></div>
+              <div className={`w-1.5 h-1.5 rounded-full ${isWorking ? 'bg-primary animate-pulse' : isSuccess ? 'bg-green-400' : isRevoked ? 'bg-slate-300' : 'bg-red-400'}`}></div>
               <p className="truncate block max-w-[260px] italic">"{message}"</p>
             </div>
           )}

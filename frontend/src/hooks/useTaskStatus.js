@@ -13,7 +13,8 @@ export const useTaskStatus = (taskId, onComplete) => {
     enabled: !!taskId,
     refetchInterval: (query) => {
       const data = query.state.data;
-      if (data?.status === 'COMPLETED' || data?.status === 'FAILURE') return false;
+      const TERMINAL_STATES = ['COMPLETED', 'FAILURE', 'REVOKED'];
+      if (TERMINAL_STATES.includes(data?.status)) return false;
       return 1500; // Poll every 1.5s
     },
     select: (res) => ({
@@ -21,9 +22,10 @@ export const useTaskStatus = (taskId, onComplete) => {
       message: res.message,
       logs: res.logs || [],
       processedPages: res.processed_pages || [],
-      isWorking: res.status !== 'COMPLETED' && res.status !== 'FAILURE',
+      isWorking: res.status !== 'COMPLETED' && res.status !== 'FAILURE' && res.status !== 'REVOKED',
       isSuccess: res.status === 'COMPLETED',
-      isFailed: res.status === 'FAILURE'
+      isFailed: res.status === 'FAILURE',
+      isRevoked: res.status === 'REVOKED'
     })
   });
 

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 
 /**
  * Advanced Chat Streaming Hook 🚀
@@ -7,9 +7,32 @@ import { useState, useCallback } from 'react';
 export const useChatStream = (contextUrl) => {
   const [messages, setMessages] = useState([]);
   const [isTyping, setIsTyping] = useState(false);
+  const controllerRef = useRef(null);
+
+  // Stop the current streaming session
+  const stopStreaming = useCallback(() => {
+    if (controllerRef.current) {
+      controllerRef.current.abort();
+      controllerRef.current = null;
+      setIsTyping(false);
+      
+      // Cleanup the last message's status if it was still "Thinking"
+      setMessages(prev => {
+        const newMsgs = [...prev];
+        if (newMsgs.length > 0 && newMsgs[newMsgs.length - 1].role === 'ai') {
+          newMsgs[newMsgs.length - 1].status = null;
+        }
+        return newMsgs;
+      });
+    }
+  }, []);
 
   // Send a message + handle streaming chunks
   const sendMessage = useCallback(async (query) => {
+    // 1. Reset/Initialize Controller 🛡️
+    if (controllerRef.current) controllerRef.current.abort();
+    controllerRef.current = new AbortController();
+
     const userMsg = { role: 'user', content: query };
     setMessages(prev => [...prev, userMsg]);
     setIsTyping(true);
@@ -20,6 +43,7 @@ export const useChatStream = (contextUrl) => {
       const response = await fetch(`${baseUrl}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controllerRef.current.signal,
         body: JSON.stringify({ 
           query: query, 
           context_url: contextUrl 
@@ -79,7 +103,6 @@ export const useChatStream = (contextUrl) => {
       }
 
       // 4. CLEAR STATUS ON COMPLETION ✅
-      // Once the stream is done, we remove the 'Thinking' bar so the response looks clean.
       setMessages(prev => {
         const newMsgs = [...prev];
         if (newMsgs.length > 0) {
@@ -89,20 +112,25 @@ export const useChatStream = (contextUrl) => {
       });
 
     } catch (error) {
-      console.error("AI stream error:", error);
-      setMessages(prev => [...prev, { 
-        role: 'ai', 
-        content: "Sorry, I lost the connection to the thinking engine.", 
-        sources: [] 
-      }]);
+      if (error.name === 'AbortError') {
+        console.log("Stream stopped by user.");
+      } else {
+        console.error("AI stream error:", error);
+        setMessages(prev => [...prev, { 
+          role: 'ai', 
+          content: "Sorry, I lost the connection to the thinking engine.", 
+          sources: [] 
+        }]);
+      }
     } finally {
       setIsTyping(false);
+      controllerRef.current = null;
     }
   }, [contextUrl]);
 
   // Utility to inject a Swoop Card into the chat flow
-  const addSwoopCard = useCallback((taskId) => {
-    setMessages(prev => [...prev, { role: 'swoop', taskId }]);
+  const addSwoopCard = useCallback((taskId, url) => {
+    setMessages(prev => [...prev, { role: 'swoop', taskId, url }]);
   }, []);
 
   return { 
@@ -110,6 +138,7 @@ export const useChatStream = (contextUrl) => {
     setMessages, 
     isTyping, 
     sendMessage, 
-    addSwoopCard 
+    addSwoopCard,
+    stopStreaming 
   };
 };

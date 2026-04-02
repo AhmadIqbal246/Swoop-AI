@@ -193,9 +193,6 @@ async def stream_answer(query: str, context_url: Optional[str] = None):
     is_greeting = query.strip().lower() in ["hi", "hello", "hey", "how are you", "thanks", "nice", "wow", "ok", "okay"]
     sources = list(set([doc.metadata.get("url") for doc in top_docs])) if not is_greeting else []
     
-    # 5. Yield metadata first
-    yield json.dumps({"type": "metadata", "sources": sources}) + "\n"
-
     # 6. THE GOLDEN RULE PROMPT (Role-Based for Llama 3 Architecture) 🏛️🎯
     prompt = ChatPromptTemplate.from_messages([
         ("system", """You are Swoop AI, an elite Intelligence Engine. Deliver the "Perfect Response" by adhering exclusively to the provided <knowledge_base>.
@@ -214,11 +211,30 @@ CRITICAL RULES:
         ("human", """<knowledge_base>\n{context}\n</knowledge_base>\n\nQuestion: {question}""")
     ])
 
-    # 7. Stream tokens from the preloaded Groq LLM
+    # 6. Stream tokens from the preloaded Groq LLM
     chain = prompt | llm | StrOutputParser()
     
+    full_response = ""
     async for chunk in chain.astream({"context": context_text, "question": query}):
+        full_response += chunk
         yield json.dumps({"type": "token", "content": chunk}) + "\n"
+
+    # 7. CONDITIONAL SOURCE DISPLAY 🛡️🎯
+    # If the AI declined to answer because the context was poor, we do NOT show sources.
+    # This prevents user confusion where they see links but the AI says "I don't know."
+    decline_phrase = "My current intelligence does not contain specific details"
+    
+    if is_greeting:
+        # Greetings never have sources
+        final_sources = []
+    elif decline_phrase in full_response:
+        # If we declined, hide the "useless" sources
+        final_sources = []
+    else:
+        # Regular helpful response: Show precision sources
+        final_sources = sources
+
+    yield json.dumps({"type": "metadata", "sources": final_sources}) + "\n"
 
 async def generate_answer(query: str, context_url: Optional[str] = None):
     """

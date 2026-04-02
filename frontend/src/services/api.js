@@ -18,6 +18,12 @@ export const scraperService = {
   getTaskStatus: async (taskId) => {
     const response = await api.get(`/task-status/${taskId}`);
     return response.data;
+  },
+
+  stopTask: async (taskId) => {
+    if (!taskId) return;
+    const response = await api.post(`/stop-task/${taskId}`);
+    return response.data;
   }
 };
 
