@@ -60,5 +60,5 @@ async def chat(data: ChatRequest):
     """
     return StreamingResponse(
         stream_answer(data.query, data.context_url),
-        media_type="application/x-ndjson"
+        media_type="text/event-stream"
     )

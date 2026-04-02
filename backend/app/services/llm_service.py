@@ -20,7 +20,8 @@ print("Engine Warming Up: Preloading LLM & Embeddings...")
 llm = ChatGroq(
     model_name=settings.LLM_MODEL,
     groq_api_key=settings.GROQ_API_KEY,
-    temperature=0.1
+    temperature=0.1,
+    streaming=True
 )
 
 from typing import Optional
@@ -48,7 +49,7 @@ def neural_rerank(inputs: dict) -> list:
         rerank_results = co.rerank(
             query=query, 
             documents=texts, 
-            top_n=5, 
+            top_n=10, 
             model='rerank-v3.5'
         )
         
@@ -89,11 +90,21 @@ async def stream_answer(query: str, context_url: Optional[str] = None):
     Question: {question}
     Answer:""")
 
+    # 1. VISUAL FEEDBACK (Initial) 🔍
+    # We send these as 'status' type so the UI can render them in a dedicated 'Thinking' bar.
+    yield json.dumps({"type": "status", "content": "🔍 Searching through knowledge..."}) + "\n"
+    await asyncio.sleep(0.05)
+
     # 1. HYBRID RETRIEVAL STRATEGY 🕵️‍♂️
     # Create a "Clean" query for semantic matching (remove the noisy URL string)
     query_clean = re.sub(r'https?://[^\s,]+', '', query).strip()
     # If the user ONLY sent a URL, we use a fallback generic query
     search_query = query_clean if query_clean else "Tell me about this website"
+
+    # IDENTITY DETECTION 🕵️‍♂️ (Who is, Founder, CEO, Team)
+    # Using a maximalist keyword set to ensure we never miss identity chunks.
+    is_identity_query = any(word in query.lower() for word in ["who is", "founder", "ceo", "team", "leadership", "owner", "management", "boss", "creator", "started", "history", "vision"])
+    primary_k = 65 if is_identity_query else 25
 
     # A. Global Semantic search (NOW DOMAIN-ISOLATED 🛡️)
     if context_url:
@@ -104,14 +115,14 @@ async def stream_answer(query: str, context_url: Optional[str] = None):
             asyncio.to_thread(
                 vectorstore.similarity_search, 
                 search_query, 
-                k=25, 
+                k=primary_k, 
                 filter={"base_url": context_url.rstrip('/')}
             )
         ]
     else:
         # Fallback to general search
         search_tasks = [
-            asyncio.to_thread(vectorstore.similarity_search, search_query, k=20)
+            asyncio.to_thread(vectorstore.similarity_search, search_query, k=25)
         ]
     
     # B. Targeted URL fetch
@@ -133,7 +144,7 @@ async def stream_answer(query: str, context_url: Optional[str] = None):
             asyncio.to_thread(
                 vectorstore.similarity_search, 
                 search_query, 
-                k=10, 
+                k=15, 
                 filter={"url": context_url.rstrip('/')}
             )
         )
@@ -141,6 +152,12 @@ async def stream_answer(query: str, context_url: Optional[str] = None):
     # EXECUTE ALL SIMULTANEOUSLY 🚀
     # This is still parallel! It just uses threads instead of raw async task-switching.
     search_results = await asyncio.gather(*search_tasks)
+    
+    yield json.dumps({"type": "status", "content": "🧠 Formulating thoughts..."}) + "\n"
+    await asyncio.sleep(0.05)
+
+    yield json.dumps({"type": "status", "content": "✨ Refining response..."}) + "\n"
+    await asyncio.sleep(0.05)
     
     # Flatten and Deduplicate
     raw_docs = [doc for result in search_results for doc in result]

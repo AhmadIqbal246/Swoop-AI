@@ -38,9 +38,11 @@ def process_url_task(self, url: str):
     to_scrape = {
         url,                    # The provided start URL
         base_url,               # The Root/Home Page
-        f"{base_url}/about",    # Common About variants
+        f"{base_url}/about",    # Common About/Contact variants
         f"{base_url}/about-us",
-        f"{base_url}/team"
+        f"{base_url}/team",
+        f"{base_url}/contact",
+        f"{base_url}/contact-us"
     } 
     
     init_res = asyncio.run(scrape_urls_parallel([url], headless=False))
@@ -72,9 +74,16 @@ def process_url_task(self, url: str):
         if not is_excluded and full_link not in to_scrape:
             to_scrape.add(full_link)
 
-    # Convert to list and ensure high-value URLs are in the TOP 15
-    # We sort to keep shorter URLs (usually root/about) at the top.
-    target_urls = sorted(list(to_scrape), key=len)[:15]
+    # 2. PRIORITY SCORING ENGINE 🎯
+    # We ensure high-value Identity pages (Team, About, Contact) are always in the TOP 15
+    def get_priority_score(u):
+        u_low = u.lower()
+        if u_low == homepage_normalized: return 0
+        identity_keywords = ["about", "team", "contact", "founder", "leadership"]
+        if any(kw in u_low for kw in identity_keywords): return 1
+        return 10 + len(u) # Deeper pages are secondary
+
+    target_urls = sorted(list(to_scrape), key=get_priority_score)[:15]
     total_found = len(target_urls)
     
     # 2. THE SWOOP (Parallel Scrape)

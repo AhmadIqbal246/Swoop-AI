@@ -47,11 +47,17 @@ export const useChatStream = (contextUrl) => {
               const data = JSON.parse(line);
               
               if (!aiMessageAdded) {
-                setMessages(prev => [...prev, { role: 'ai', content: '', sources: [] }]);
+                setMessages(prev => [...prev, { role: 'ai', content: '', status: '', sources: [] }]);
                 aiMessageAdded = true;
               }
-
-              if (data.type === 'metadata') {
+              
+              if (data.type === 'status') {
+                setMessages(prev => {
+                  const newMsgs = [...prev];
+                  newMsgs[newMsgs.length - 1].status = data.content;
+                  return newMsgs;
+                });
+              } else if (data.type === 'metadata') {
                 setMessages(prev => {
                   const newMsgs = [...prev];
                   newMsgs[newMsgs.length - 1].sources = data.sources;
@@ -71,6 +77,17 @@ export const useChatStream = (contextUrl) => {
           }
         }
       }
+
+      // 4. CLEAR STATUS ON COMPLETION ✅
+      // Once the stream is done, we remove the 'Thinking' bar so the response looks clean.
+      setMessages(prev => {
+        const newMsgs = [...prev];
+        if (newMsgs.length > 0) {
+          newMsgs[newMsgs.length - 1].status = null;
+        }
+        return newMsgs;
+      });
+
     } catch (error) {
       console.error("AI stream error:", error);
       setMessages(prev => [...prev, { 

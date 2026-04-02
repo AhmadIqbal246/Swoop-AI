@@ -141,8 +141,19 @@ const ChatInterface = ({ taskState, setTaskState }) => {
                     </div>
                   </div>
 
-                  {/* Content */}
+                  {/* Content & Intelligence Bar */}
                   <div className="flex-1 space-y-4">
+                    
+                    {/* THOUGHT PROCESS BAR - Shows the engine working behind the scenes */}
+                    {msg.status && (
+                      <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-100/80 border border-slate-200/50 rounded-lg w-max animate-pulse">
+                        <div className="w-1.5 h-1.5 bg-primary rounded-full"></div>
+                        <span className="text-[11px] font-bold text-slate-500 tracking-wide uppercase italic">
+                          {msg.status}
+                        </span>
+                      </div>
+                    )}
+
                     <div className="prose prose-slate max-w-none text-[15px] leading-relaxed text-slate-700 font-medium">
                       {msg.content}
                     </div>
