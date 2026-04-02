@@ -34,25 +34,27 @@ def process_url_task(self, url: str):
     init_data = init_res[0]
     to_scrape = {url} # Set to avoid duplicates
     
-    # Core 6 Keywords
-    keywords = {
-        "about": ["about", "story", "team", "who we are", "company", "culture"],
-        "pricing": ["pricing", "plans", "quotes", "billing", "shop", "prices", "cost"],
-        "faq": ["faq", "help", "support", "frequent", "guide", "manual", "questions"],
-        "contact": ["contact", "location", "address", "call", "email", "support"],
-        "services": ["services", "projects", "features", "solutions", "what we do", "work"],
-    }
+    # EXCLUSION LIST: Pages we KNOW are useless for an AI knowledge base
+    # Everything else discovered on the homepage will be scraped.
+    excluded_patterns = [
+        "privacy", "terms", "cookie", "legal", "disclaimer",
+        "login", "signin", "signup", "register", "logout",
+        "cart", "checkout", "account", "password", "reset",
+        ".pdf", ".zip", ".png", ".jpg", ".jpeg", ".gif", ".svg",
+        "mailto:", "tel:", "javascript:", "wp-admin", "wp-login",
+        "#", "?utm_", "?ref=", "?source="
+    ]
     
     for link in init_data.get("links", []):
         full_link = link["url"]
-        link_text = link["text"]
-        for cat, keys in keywords.items():
-            if any(k in link_text or k in full_link.lower() for k in keys):
-                if full_link not in to_scrape:
-                    to_scrape.add(full_link)
-                    break
+        
+        # Skip if it's a junk/excluded link
+        is_excluded = any(pattern in full_link.lower() for pattern in excluded_patterns)
+        
+        if not is_excluded and full_link not in to_scrape:
+            to_scrape.add(full_link)
 
-    target_urls = list(to_scrape)[:10]
+    target_urls = list(to_scrape)[:15]
     total_found = len(target_urls)
     
     # 2. THE SWOOP (Parallel Scrape)
