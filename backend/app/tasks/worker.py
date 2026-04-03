@@ -102,7 +102,9 @@ def process_url_task(self, url: str):
             cleaned = clean_raw_text(raw_text)
             master_text += f"\n\n{'='*60}\n SOURCE PAGE: {final_url} | TITLE: {title}\n{'='*60}\n\n{cleaned}\n"
 
-        parsed_domain_file = urlparse(url).netloc.replace(".", "_")
+        from app.utils.domain_tools import normalize_to_domain
+        p_domain_norm = normalize_to_domain(url)
+        parsed_domain_file = p_domain_norm.replace(".", "_") if p_domain_norm else urlparse(url).netloc.replace(".", "_")
         file_path = os.path.join(export_dir, f"{parsed_domain_file}_Full_Knowledge.txt")
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(master_text)
