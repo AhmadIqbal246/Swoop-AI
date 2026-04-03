@@ -1,6 +1,6 @@
 # AI Website Chatbot (RAG-Powered)
 
-.\venv\Scripts\python -m celery -A app.core.celery_app worker --pool=threads --loglevel=info
+.\venv\Scripts\python -m celery -A app.core.celery_app worker --pool=threads --loglevel=info 
 .\venv\Scripts\python -m uvicorn app.main:app --reload
 
 
