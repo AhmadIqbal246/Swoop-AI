@@ -111,7 +111,7 @@ def process_url_task(self, url: str):
         emit_log('Processing site data...', processed_list)
         
         structural_chunks = chunk_text_structurally(master_text, source_url=url)
-        upsert_structural_chunks(structural_chunks)
+        upsert_structural_chunks(structural_chunks, source_url=url)
 
         # Readiness gate
         emit_log('Finalizing analysis...', processed_list)
@@ -130,14 +130,21 @@ def process_url_task(self, url: str):
         # Registry update
         try:
             import json
+            from app.utils.domain_tools import normalize_to_domain
             registry_path = os.path.join(export_dir, "entities_registry.json")
             registry = {}
             if os.path.exists(registry_path):
                 with open(registry_path, "r", encoding="utf-8") as rf: registry = json.load(rf)
             
-            p_domain = urlparse(url).netloc
-            registry[p_domain] = { "url": url, "status": "INDEXED", "pages_counted": len(processed_list), "last_updated": time.strftime("%Y-%m-%d %H:%M:%S") }
-            with open(registry_path, "w", encoding="utf-8") as wf: json.dump(registry, wf, indent=4)
+            p_domain = normalize_to_domain(url)
+            if p_domain:
+                registry[p_domain] = { 
+                    "url": url, 
+                    "status": "INDEXED", 
+                    "pages_counted": len(processed_list), 
+                    "last_updated": time.strftime("%Y-%m-%d %H:%M:%S") 
+                }
+                with open(registry_path, "w", encoding="utf-8") as wf: json.dump(registry, wf, indent=4)
         except Exception:
             logger.warning("Registry update failed", exc_info=True)
 

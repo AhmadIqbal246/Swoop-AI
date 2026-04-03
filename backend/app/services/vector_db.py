@@ -3,12 +3,13 @@ from pinecone import Pinecone
 from app.core.config import get_settings
 from langchain_pinecone import PineconeVectorStore
 from langchain_huggingface import HuggingFaceEmbeddings
-from typing import List, Dict
-from app.core.logging import app_logger as logger # Fix 1.2: Standardized Logging
+from typing import List, Dict, Optional
+from app.core.logging import app_logger as logger 
+from app.utils.domain_tools import normalize_to_domain
 
 settings = get_settings()
 
-# INITIALIZE MODELS ON BOOT (Eliminates the 10-20s First-Query Lag) 🚀
+# INITIALIZE MODELS ON BOOT 🚀
 start_time = time.perf_counter()
 logger.info("Engine: Performing Deep Warmup (Embeddings & Index)...")
 _embeddings = HuggingFaceEmbeddings(
@@ -24,24 +25,46 @@ _vector_store = PineconeVectorStore(
 logger.info("Engine: Warmup Complete. Ready for Instant Search.", extra={"duration": time.perf_counter() - start_time})
 
 def get_embeddings():
-    """Returns the pre-initialized global embedding model."""
     return _embeddings
 
 def get_vector_store():
-    """Returns the pre-initialized global vector store instance."""
     return _vector_store
 
-def upsert_structural_chunks(chunks: List[Dict[str, any]]):
+def delete_by_domain(domain: str):
     """
-    NEW: Upserts structurally-aware chunks with rich metadata.
-    Each chunk in the list is a dictionary: {'content': str, 'metadata': dict}
+    ATOMIC CLEANER 🧹
+    Deletes all vectors for a specific domain to prevent duplication.
     """
+    try:
+        pc = Pinecone(api_key=settings.PINECONE_API_KEY)
+        index = pc.Index(settings.PINECONE_INDEX_NAME)
+        
+        # We delete by the source_base metadata field
+        index.delete(filter={"source_base": {"$eq": domain}})
+        logger.info("Atomic Wipe completed", extra={"domain": domain})
+    except Exception:
+        logger.error("Atomic Wipe failed", exc_info=True, extra={"domain": domain})
+
+def upsert_structural_chunks(chunks: List[Dict[str, any]], source_url: Optional[str] = None):
+    """
+    UPSERT WITH REFRESH LOGIC 🔄
+    Wipes old data for the domain before adding the new version.
+    """
+    if not chunks:
+        return
+
+    # Extract Domain for Atomic Wipe
+    if source_url:
+        domain = normalize_to_domain(source_url)
+        if domain:
+            delete_by_domain(domain)
+            # Inject source_base into metadata for all chunks if not already there
+            for chunk in chunks:
+                chunk["metadata"]["source_base"] = domain
+
     vectorstore = get_vector_store()
-    
     texts = [c["content"] for c in chunks]
     metadatas = [c["metadata"] for c in chunks]
     
-    # Add to index (Pinecone handles vectors, we provide text + metadata)
     vectorstore.add_texts(texts=texts, metadatas=metadatas)
-    
-    logger.info("Chunks upserted to Pinecone", extra={"count": len(chunks)}) # Fix 1.2: Traceability
+    logger.info("Chunks upserted to Pinecone", extra={"count": len(chunks), "domain": domain if source_url else "unknown"})
