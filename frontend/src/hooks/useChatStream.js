@@ -1,13 +1,23 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 
 /**
  * Advanced Chat Streaming Hook 🚀
- * Handles real-time server-sent events for AI responses.
+ * Now with persistent Memorization and Session Tracking.
  */
 export const useChatStream = (contextUrl) => {
   const [messages, setMessages] = useState([]);
   const [isTyping, setIsTyping] = useState(false);
+  const [sessionId, setSessionId] = useState(localStorage.getItem('swoop_session_id') || '');
   const controllerRef = useRef(null);
+
+  // Initialize Session ID on first load
+  useEffect(() => {
+    if (!sessionId) {
+      const newId = `session_${Math.random().toString(36).substring(2, 15)}_${Date.now()}`;
+      setSessionId(newId);
+      localStorage.setItem('swoop_session_id', newId);
+    }
+  }, [sessionId]);
 
   // Stop the current streaming session
   const stopStreaming = useCallback(() => {
@@ -16,7 +26,6 @@ export const useChatStream = (contextUrl) => {
       controllerRef.current = null;
       setIsTyping(false);
       
-      // Cleanup the last message's status if it was still "Thinking"
       setMessages(prev => {
         const newMsgs = [...prev];
         if (newMsgs.length > 0 && newMsgs[newMsgs.length - 1].role === 'ai') {
@@ -27,9 +36,29 @@ export const useChatStream = (contextUrl) => {
     }
   }, []);
 
+  // Wipe chat history locally and in Redis
+  const clearHistory = useCallback(async () => {
+    setMessages([]);
+    const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1/chatbot';
+    
+    // Tell backend to wipe Redis session
+    try {
+      await fetch(`${baseUrl}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          query: "RESET_HISTORY", 
+          session_id: sessionId,
+          clear_history: true 
+        })
+      });
+    } catch (e) {
+      console.warn("Could not sync history clear with server:", e);
+    }
+  }, [sessionId]);
+
   // Send a message + handle streaming chunks
   const sendMessage = useCallback(async (query) => {
-    // 1. Reset/Initialize Controller 🛡️
     if (controllerRef.current) controllerRef.current.abort();
     controllerRef.current = new AbortController();
 
@@ -46,6 +75,7 @@ export const useChatStream = (contextUrl) => {
         signal: controllerRef.current.signal,
         body: JSON.stringify({ 
           query: query, 
+          session_id: sessionId,
           context_url: contextUrl 
         })
       });
@@ -102,7 +132,6 @@ export const useChatStream = (contextUrl) => {
         }
       }
 
-      // 4. CLEAR STATUS ON COMPLETION ✅
       setMessages(prev => {
         const newMsgs = [...prev];
         if (newMsgs.length > 0) {
@@ -126,9 +155,8 @@ export const useChatStream = (contextUrl) => {
       setIsTyping(false);
       controllerRef.current = null;
     }
-  }, [contextUrl]);
+  }, [contextUrl, sessionId]);
 
-  // Utility to inject a Swoop Card into the chat flow
   const addSwoopCard = useCallback((taskId, url) => {
     setMessages(prev => [...prev, { role: 'swoop', taskId, url }]);
   }, []);
@@ -136,8 +164,10 @@ export const useChatStream = (contextUrl) => {
   return { 
     messages, 
     setMessages, 
+    sessionId,
     isTyping, 
     sendMessage, 
+    clearHistory,
     addSwoopCard,
     stopStreaming 
   };

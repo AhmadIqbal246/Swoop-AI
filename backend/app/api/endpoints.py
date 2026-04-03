@@ -83,12 +83,19 @@ async def stop_task(task_id: str):
         message="Stop signal sent to the indexing engine."
     )
 
+from app.services.history_service import HistoryManager
+
 @router.post("/chat")
 async def chat(data: ChatRequest):
     """
     Answers a question by streaming tokens from the LLM in real-time.
+    Supports session-based memory and context-aware retrieval.
     """
+    # 1. Handle History Wipe (New Chat Start) 🧹
+    if data.clear_history:
+        HistoryManager.clear_session(data.session_id)
+        
     return StreamingResponse(
-        stream_answer(data.query, data.context_url),
+        stream_answer(data.query, data.session_id, data.context_url),
         media_type="text/event-stream"
     )

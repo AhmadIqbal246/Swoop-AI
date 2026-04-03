@@ -9,6 +9,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from app.services.vector_db import get_vector_store
 from app.core.config import get_settings
+from app.services.history_service import HistoryManager
 
 settings = get_settings()
 
@@ -59,7 +60,25 @@ def get_base_url_filter(url: str) -> Optional[Dict[str, Any]]:
     clean = url.rstrip('/')
     return {"base_url": {"$in": [clean, clean + '/']}}
 
-async def retrieve_context(query: str, context_url: Optional[str] = None) -> Tuple[str, List[str]]:
+async def condense_query(query: str, history_str: str) -> str:
+    """
+    ELITE CONDENSER:
+    Transforms a dialogue-dependent question into a standalone search query.
+    If no history, returns original query cleaned.
+    """
+    if not history_str:
+        return re.sub(r'https?://[^\s,]+', '', query).strip() or "Tell me about this website"
+
+    condense_prompt = ChatPromptTemplate.from_messages([
+        ("system", "You are a Query Architect. Given a conversation history and a new question, output ONLY a standalone search query that captures the core intent. Do NOT answer the question. Just output the search text."),
+        ("human", f"Chat History:\n{history_str}\n\nNew Question: {query}")
+    ])
+    
+    chain = condense_prompt | llm | StrOutputParser()
+    standalone = await chain.ainvoke({})
+    return standalone.strip()
+
+async def retrieve_context(query: str, context_url: Optional[str] = None, history_str: str = "") -> Tuple[str, List[str]]:
     """
     CORE RETRIEVAL ENGINE 🧠⚡
     Performs high-performance Hybrid Search, Deduplication, and Neural Reranking.
@@ -67,32 +86,25 @@ async def retrieve_context(query: str, context_url: Optional[str] = None) -> Tup
     """
     vectorstore = get_vector_store()
     
-    # 1. CLEAN QUERY
-    query_clean = re.sub(r'https?://[^\s,]+', '', query).strip()
-    search_query = query_clean if query_clean else "Tell me about this website"
+    # 1. SMART CONDENSATION (Context-Aware Search) 🧠
+    search_query = await condense_query(query, history_str)
+    print(f"🔍 Optimized Search Query: {search_query}")
 
-    # 2. PARALLEL HYBRID SEARCH (Global + Targeted + Contact Fix) 🕵️‍♂️🎯
+    # 2. PARALLEL TRIPLE-THREAT SEARCH 🕵️‍♂️🎯
     search_tasks = []
     
-    # A. Global Semantic Search
-    search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, search_query, k=25))
+    # A. Global Semantic Search (The Broad Net)
+    search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, search_query, k=30))
 
-    # B. Targeted Domain Search
+    # B. Targeted Domain Search (The Precision Strike)
     if context_url:
-        search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, search_query, k=35, filter=get_base_url_filter(context_url)))
+        search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, search_query, k=40, filter=get_base_url_filter(context_url)))
 
-    # C. Targeted URL fetch (for pasted links)
-    extracted_urls = re.findall(r'(https?://[^\s,]+)', query)
-    for url in extracted_urls:
-        search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, query, k=10, filter={"url": url.rstrip('/')}))
-
-    # D. Factual Query Expansion (Contact Info Search)
-    contact_keywords = ["contact", "email", "phone", "location", "address", "call", "reach"]
-    if any(word in query.lower() for word in contact_keywords):
-        factual_query = "email address phone number location office support contact us"
-        search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, factual_query, k=15))
-        if context_url:
-            search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, factual_query, k=10, filter=get_base_url_filter(context_url)))
+    # C. Factual Expansion (The Extra Mile)
+    contact_keywords = ["contact", "email", "phone", "location", "address", "call", "reach", "pricing", "cost", "plans"]
+    if any(word in search_query.lower() for word in contact_keywords):
+        factual_query = "contact details email phone address pricing plans cost structure"
+        search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, factual_query, k=20))
 
     # EXECUTE SEARCHES IN PARALLEL 🚀
     search_results = await asyncio.gather(*search_tasks)
@@ -102,18 +114,20 @@ async def retrieve_context(query: str, context_url: Optional[str] = None) -> Tup
     unique_docs = []
     seen_contents = set()
     for doc in raw_docs:
+        # Simple dedupe by content
         if doc.page_content not in seen_contents:
             unique_docs.append(doc)
             seen_contents.add(doc.page_content)
 
     # 4. NEURAL RERANKING & THRESHOLDING 📉
+    # We send the optimized query to Cohere for maximum accuracy
     scored_docs = await neural_rerank_async(search_query, unique_docs)
     
     top_docs = []
     for doc, score in scored_docs:
-        if score >= 0.3:
+        if score >= 0.25: # Lowered threshold slightly to catch more context for reranker
             top_docs.append(doc)
-        if len(top_docs) >= 12: # Standard depth for rich reports
+        if len(top_docs) >= 12: 
             break
 
     # Final Fallback
@@ -125,25 +139,25 @@ async def retrieve_context(query: str, context_url: Optional[str] = None) -> Tup
     
     return context_text, sources
 
-async def stream_answer(query: str, context_url: Optional[str] = None):
+async def stream_answer(query: str, session_id: str, context_url: Optional[str] = None):
     """
     Asynchronous generator that streams LLM tokens to the client in real-time.
-    Uses Precision Filtering and Knowledge Inventory Awareness.
+    Now 100% History-Aware and Context-Precision Optimized.
     """
-    # 1. VISUAL FEEDBACK 🔍
-    yield json.dumps({"type": "status", "content": "🔍 Searching through knowledge..."}) + "\n"
+    # 1. LOAD MEMORY 🧠
+    history_str = HistoryManager.get_history_as_string(session_id)
+    profile = HistoryManager.get_profile(session_id)
+    user_name = profile.get("name", "User")
+
+    yield json.dumps({"type": "status", "content": "🔍 Analyzing conversation history..."}) + "\n"
     
     # 2. FETCH CORE CONTEXT 🧠⚡ (Unified Retrieval Logic)
-    context_text, sources = await retrieve_context(query, context_url)
+    context_text, sources = await retrieve_context(query, context_url, history_str)
     
     # 3. FETCH GLOBAL ENTITY INVENTORY (Source of Truth) 🗃️
     inventory_list = []
-    # 5. FETCH GLOBAL ENTITY INVENTORY (Source of Truth) 🗃️
-    inventory_list = []
     try:
-        # Robust Path-Finding Strategy: Base path on llm_service.py location
         cur_dir = os.path.dirname(os.path.abspath(__file__)) 
-        # path is ../../scraped_data/entities_registry.json
         backend_dir = os.path.dirname(os.path.dirname(cur_dir))
         reg_path = os.path.join(backend_dir, "scraped_data", "entities_registry.json")
         
@@ -151,45 +165,37 @@ async def stream_answer(query: str, context_url: Optional[str] = None):
             with open(reg_path, "r", encoding="utf-8") as rf:
                 reg_data = json.load(rf)
                 inventory_list = sorted(list(reg_data.keys()))
-        else:
-            print(f" Registry missing at: {reg_path}")
     except Exception as e:
         print(f" Registry Error: {e}")
     
     total_entities = len(inventory_list)
     inventory_str = ", ".join(inventory_list) if inventory_list else "None (System Warmup)"
     
-    yield json.dumps({"type": "status", "content": "🧠 Formulating thoughts..."}) + "\n"
-    await asyncio.sleep(0.05)
-    yield json.dumps({"type": "status", "content": "✨ Refining response..."}) + "\n"
+    yield json.dumps({"type": "status", "content": "✨ Synthesizing intelligence..."}) + "\n"
 
-    # 4. THE GOLDEN RULE PROMPT 🏛️🎯
+    # 4. THE GOLDEN RULE PROMPT 🏛️🎯 (Updated with History)
     prompt = ChatPromptTemplate.from_messages([
         ("system", f"""You are Swoop AI, an elite Intelligence Engine. 
 
-SUPREME SOURCE OF TRUTH (DATABASE STATS):
+CURRENT SESSION PROFILE:
+- USER NAME: {user_name}
 - TOTAL ENTITIES INDEXED: {total_entities}
 - FULL DOMAIN LIST: [{inventory_str}]
 
 CRITICAL INSTRUCTIONS:
-1. KB META-QUERIES: If the user asks "how many," "which," or "list" companies you have, DISREGARD the <knowledge_base> and use the SUPREME SOURCE OF TRUTH above (e.g. "I currently contain intelligence on {total_entities} companies...").
-2. DATA GAPS: If a user asks about a company NOT in the DOMAIN LIST, state you haven't read that site.
-3. ZERO HALLUCINATION: Build answers EXCLUSIVELY on the <knowledge_base>.
-4. DECLINE GRACEFULLY: If the <knowledge_base> does not contain the specific answer, do NOT guess. Politely explain that you don't have enough specific information in your database to answer that accurately for the entity, and suggest what you *can* help with based on your inventory.
-5- NO INTRO FLUFF: The first sentence must begin with the primary subject.
+1. KB META-QUERIES: If the user asks about your database, use the STATS above.
+2. ZERO HALLUCINATION: Build answers EXCLUSIVELY on the <knowledge_base>. 
+3. HISTORY AWARENESS: Use the <chat_history> to maintain dialogue flow. If the user refers to "it" or "the company," check the history.
+4. NAME USAGE: If a USER NAME is provided and not generic, acknowledge it naturally once.
+5. DECLINE GRACEFULLY: If info is missing, say so politely. Do NOT guess.
+6. NO INTRO FLUFF: The first sentence must start with the direct answer or main subject.
 
-PROPORTIONAL DEPTH STRATEGY:
-- CONVERSATIONAL: For greetings (hi, hello) or common pleasantries (how are you, what are you doing), answer warmly as an elite AI.
-- OFF-TOPIC QUESTIONS: If asked about general knowledge not in the database (e.g., "how to bake a pizza"), give a helpful, concise answer, but politely suggest that you are best at answering questions related to the websites and companies in your inventory.
-- SHORT & FACTUAL: If the user asks a specific question OR if the <knowledge_base> contains only 1-2 bits of relevant data. Provide a short, direct answer. 
-- RICH REPORTS: If the user asks for an overview OR the <knowledge_base> contains multiple paragraphs of data. Use Markdown headers and bullet points.
-- COMPLIMENTS: If the user provides a compliment or positive feedback (e.g., "You're great!", "Amazing answer"), acknowledge it with professional grace. Thank them warmly for the recognition and express your commitment to delivering the highest caliber of business intelligence.
-- CRITICAL FEEDBACK: If the user provides negative feedback or identifies an error (e.g., "This is wrong," "You're bad"), apologize politely and professionally for any oversight. Reiterate your commitment to high-precision indexing and express your goal to provide more accurate data in our next interaction. Maintain a calm, objective, and solution-oriented tone.
-
-NO META-TALK: Never mention "context" or "inventory" words. 
-FIRST SENTENCE: Must start with the primary subject or the direct answer.
+PROPORTIONAL DEPTH:
+- Greetings: Warm but professional.
+- Specific Questions: Short and direct.
+- Overviews: Structured Markdown with headers.
 """),
-        ("human", """<knowledge_base>\n{context}\n</knowledge_base>\n\nQuestion: {question}""")
+        ("human", f"""<chat_history>\n{history_str}\n</chat_history>\n\n<knowledge_base>\n{{context}}\n</knowledge_base>\n\nQuestion: {{question}}""")
     ])
 
     # 5. STREAM TOKENS 🌊
@@ -199,30 +205,22 @@ FIRST SENTENCE: Must start with the primary subject or the direct answer.
         full_response += chunk
         yield json.dumps({"type": "token", "content": chunk}) + "\n"
 
-    # 6. CONDITIONAL SOURCE DISPLAY 🛡️🎯
-    # Rule 1: We hide sources if the user is just saying "Hi" or "Thanks".
-    # Rule 2: We hide sources if the AI declined to answer (Missing Intelligence).
-    # Rule 3: We hide sources for "Meta-Queries" (Database stats).
+    # 6. SAVE TO MEMORY 💾
+    HistoryManager.add_message(session_id, "user", query)
+    HistoryManager.add_message(session_id, "assistant", full_response)
     
+    # Extra: Detect if user shared their name (Basic Identity Extraction)
+    if "my name is " in query.lower():
+        extracted_name = query.lower().split("my name is ")[1].title().split()[0].replace(".", "").replace("!", "")
+        HistoryManager.store_fact(session_id, "name", extracted_name)
+
+    # 7. CONDITIONAL SOURCE DISPLAY
     is_greeting = query.strip().lower() in ["hi", "hello", "hey", "how are you", "thanks", "ok", "okay"]
-    
-    meta_keywords = ["how many", "which companies", "what companies", "total", "inventory", "count", "database", "which sites"]
-    is_meta_query = any(word in query.lower() for word in meta_keywords)
-    
-    # ADVANCED DECLINE DETECTION 🕵️‍♂️ (Catches all natural variations)
-    decline_indicators = [
-        "don't have enough specific information",
-        "not mentioned in my database",
-        "not in my database",
-        "haven't read any information",
-        "not have any details to provide",
-        "lack of specific information",
-        "don't have details"
-    ]
-    is_declined = any(indicator in full_response.lower() for indicator in decline_indicators)
+    meta_keywords = ["how many", "which companies", "what companies", "total", "inventory"]
+    is_meta = any(word in query.lower() for word in meta_keywords)
     
     final_sources = []
-    if not is_greeting and not is_meta_query and not is_declined:
+    if not is_greeting and not is_meta and "don't have enough specific information" not in full_response.lower():
         final_sources = sources
 
     yield json.dumps({"type": "metadata", "sources": final_sources}) + "\n"
