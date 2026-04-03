@@ -95,6 +95,10 @@ export const useChatStream = (contextUrl) => {
         })
       });
 
+      if (response.status === 429) {
+        throw new Error('RATE_LIMIT');
+      }
+
       if (!response.ok) throw new Error('Stream connection failed');
 
       const reader = response.body.getReader();
@@ -158,11 +162,17 @@ export const useChatStream = (contextUrl) => {
     } catch (error) {
       if (error.name === 'AbortError') {
         console.log("Stream stopped by user.");
+      } else if (error.message === 'RATE_LIMIT') {
+        setMessages(prev => [...prev, { 
+          role: 'ai', 
+          content: "⚠️ **Request Limit Reached:** You've reached the maximum number of messages permitted per minute. Please wait a moment before sending another message to ensure the thinking engine stays stable.", 
+          sources: [] 
+        }]);
       } else {
         console.error("AI stream error:", error);
         setMessages(prev => [...prev, { 
           role: 'ai', 
-          content: "Sorry, I lost the connection to the thinking engine.", 
+          content: "Sorry, I lost the connection to the thinking engine. Please try refreshing or checking your internet connection.", 
           sources: [] 
         }]);
       }

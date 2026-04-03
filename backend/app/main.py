@@ -1,7 +1,10 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.core.config import get_settings
+from app.core.limiter import limiter
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 settings = get_settings()
 
@@ -9,6 +12,10 @@ app = FastAPI(
     title=settings.APP_NAME,
     debug=settings.DEBUG
 )
+
+# Return 429 Too Many Requests if limited
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS Middleware (RESTORED 🛡️)
 app.add_middleware(

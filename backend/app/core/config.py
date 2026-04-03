@@ -3,12 +3,12 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     # App Settings
-    APP_NAME: str = "AI Website Chatbot"
+    APP_NAME: str = "Swoop AI"
     DEBUG: bool = True
     
     # AI Models
     EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
-    LLM_MODEL: str = "llama-3.3-70b-versatile"
+    LLM_MODEL: str = "llama-3.1-8b-instant"
     
     # API Keys
     GROQ_API_KEY: str
@@ -30,6 +30,17 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = "INFO"
     LOG_FILE_PATH: str = "logs/chatbot.log"
+
+    # Rate Limiting (Fix 6.2)
+    RATE_LIMIT_PROCESS_URL_PER_MIN: int = 5
+    RATE_LIMIT_CHAT_PER_MIN: int = 5
+    RATE_LIMIT_SESSION_CHAT_PER_MIN: int = 10
+
+    # Validation Constraints (Fix 6.3)
+    MAX_URL_LENGTH: int = 2048
+    MAX_QUERY_LENGTH: int = 5000
+    MAX_SESSION_ID_LENGTH: int = 64
+    FORBIDDEN_DOMAINS: list = ["localhost", "127.0.0.1", "192.168.", "10.0.", "172.16."]
 
     class Config:
         env_file = ".env"

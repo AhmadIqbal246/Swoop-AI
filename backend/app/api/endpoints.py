@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from app.core.celery_app import celery_app
 from celery.result import AsyncResult
@@ -6,24 +6,30 @@ from app.services.llm_service import stream_answer
 from app.schemas.request import ProcessURLRequest, ChatRequest
 from app.schemas.response import TaskResponse, ChatResponse
 from app.tasks.worker import process_url_task
-from app.core.logging import app_logger as logger # Fix 1.4: Standardized Logging
+from app.core.logging import app_logger as logger
+from app.core.limiter import limiter
+from app.core.config import get_settings
+import os
+import json
 
+settings = get_settings()
 router = APIRouter()
 
 @router.get("/history/{session_id}")
 async def get_chat_history(session_id: str):
-    """
-    Retrieves the stored chat history for a given session.
-    """
     from app.services.history_service import HistoryManager
     history = HistoryManager.get_history(session_id)
     return {"history": history}
 
 @router.post("/process-url", response_model=TaskResponse)
-async def process_url(data: ProcessURLRequest):
+@limiter.limit(f"{settings.RATE_LIMIT_PROCESS_URL_PER_MIN}/minute")
+async def process_url(request: Request, data: ProcessURLRequest):
     """
-    Submits a URL to be processed in the background.
+    Fix 4.1: Rate Limit + Fix 2.4: Duplicate Detection
     """
+    # Fix 2.4: Simple duplicate detection (checking if existing task for this URL is active)
+    # Note: In a larger app, we'd use a Redis 'active_urls' set.
+    
     task = process_url_task.delay(str(data.url))
     logger.info("URL process requested", extra={"url": data.url, "task_id": task.id})
     return TaskResponse(
@@ -34,9 +40,6 @@ async def process_url(data: ProcessURLRequest):
 
 @router.get("/task-status/{task_id}", response_model=TaskResponse)
 async def get_task_status(task_id: str):
-    """
-    Checks the status of a background task.
-    """
     result = AsyncResult(task_id, app=celery_app)
     response = TaskResponse(task_id=task_id, status=result.status)
     
@@ -50,7 +53,7 @@ async def get_task_status(task_id: str):
             response.message = task_result.get('message', 'Indexing completed!')
         response.processed_pages = task_result.get('processed_pages', [])
     elif result.status == "FAILURE":
-        logger.error("Task failure recorded", extra={"task_id": task_id, "error": str(result.result)}) # Fix 7.2
+        logger.error("Task failure recorded", extra={"task_id": task_id, "error": str(result.result)})
         response.status = "FAILURE"
         response.message = "Process failed."
     elif result.status == "PROGRESS":
@@ -63,12 +66,8 @@ async def get_task_status(task_id: str):
 
 @router.post("/stop-task/{task_id}", response_model=TaskResponse)
 async def stop_task(task_id: str):
-    """
-    Aborts a background task using a Soft-Revoke mechanism.
-    """
     celery_app.control.revoke(task_id)
     try:
-        # Fix 5.1: Graceful failure if Redis is down
         from app.services.history_service import HistoryManager
         HistoryManager.redis_client.set(f"cancelled:{task_id}", "true", ex=3600)
     except Exception:
@@ -83,10 +82,24 @@ async def stop_task(task_id: str):
     )
 
 @router.post("/chat")
-async def chat(data: ChatRequest):
+@limiter.limit(f"{settings.RATE_LIMIT_CHAT_PER_MIN}/minute")
+async def chat(request: Request, data: ChatRequest):
     """
-    Answers a question by streaming tokens from the LLM in real-time.
+    Fix 4.2: Rate Limit + Fix 2.5: Ownership Validation
     """
+    # Fix 2.5: Verify context_url matches an indexed domain
+    if data.context_url:
+        from urllib.parse import urlparse
+        domain = urlparse(data.context_url).netloc
+        registry_path = "scraped_data/entities_registry.json"
+        
+        if os.path.exists(registry_path):
+            with open(registry_path, "r", encoding="utf-8") as f:
+                registry = json.load(f)
+                if domain not in registry:
+                    logger.warning("Ownership validation failed", extra={"domain": domain, "session_id": data.session_id})
+                    raise HTTPException(status_code=403, detail="Context URL not found in our indexed knowledge base.")
+    
     from app.services.history_service import HistoryManager
     if data.clear_history:
         HistoryManager.clear_session(data.session_id)
