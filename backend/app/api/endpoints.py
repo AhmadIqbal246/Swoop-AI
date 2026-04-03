@@ -9,7 +9,7 @@ from app.tasks.worker import process_url_task
 
 router = APIRouter()
 
-@router.get("/chatbot/history/{session_id}")
+@router.get("/history/{session_id}")
 async def get_chat_history(session_id: str):
     """
     Retrieves the stored chat history for a given session.
