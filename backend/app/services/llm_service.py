@@ -10,6 +10,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from app.services.vector_db import get_vector_store
 from app.core.config import get_settings
 from app.services.history_service import HistoryManager
+from app.core.logging import app_logger as logger # Fix 1.1: Standardized Logging
 
 settings = get_settings()
 
@@ -44,17 +45,18 @@ async def neural_rerank_async(query: str, docs: List[Any]) -> List[Tuple[Any, fl
     texts = [doc.page_content for doc in docs]
     
     try:
+        # Fix 3.4: Cohere library does not support 'timeout' in rerank call
         rerank_results = await asyncio.to_thread(
             co.rerank,
             query=query, 
             documents=texts, 
-            top_n=15, # Increased the top_n for richer context
+            top_n=10,
             model='rerank-v3.5'
         )
         return [(docs[res.index], res.relevance_score) for res in rerank_results.results]
-    except Exception as e:
-        print(f"⚠️ Cohere Rerank Timeout/Error: {e}. Falling back.")
-        return [(doc, 1.0) for doc in docs[:10]]
+    except Exception:
+        logger.error("Cohere Rerank error or timeout", exc_info=True) # Fix 1.1: Proper logging
+        return [(doc, 1.0) for doc in docs[:8]]
 
 def get_base_url_filter(url: str) -> Optional[Dict[str, Any]]:
     """Utility: Robust URL filter logic (Catches URL with AND without trailing slashes!)"""
@@ -89,20 +91,28 @@ async def retrieve_context(query_str: str, context_url: Optional[str] = None) ->
     if "[GREETING]" in query_str:
         return "", [], 0.0
 
+    import time
+    start_time = time.perf_counter() # Fix 7.3: Track latency
+
     vectorstore = get_vector_store()
     search_query = query_str.replace("[GREETING]", "").strip()
 
     # 1. PARALLEL TRIPLE-THREAT SEARCH 🕵️‍♂️🎯
     search_tasks = []
-    search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, search_query, k=50)) # Increased k for wider search
+    search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, search_query, k=30))
     if context_url:
-        search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, search_query, k=50, filter=get_base_url_filter(context_url)))
+        search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, search_query, k=30, filter=get_base_url_filter(context_url)))
     
     contact_keywords = ["contact", "email", "phone", "location", "address", "pricing", "cost"]
     if any(word in search_query.lower() for word in contact_keywords):
-        search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, "contact details email phone pricing plans cost", k=30))
+        search_tasks.append(asyncio.to_thread(vectorstore.similarity_search, "contact details email phone pricing plans cost", k=20))
 
-    search_results = await asyncio.gather(*search_tasks)
+    try:
+        # Fix 3.2: 10s Timeout for Pinecone search
+        search_results = await asyncio.wait_for(asyncio.gather(*search_tasks), timeout=settings.VECTOR_SEARCH_TIMEOUT_SEC)
+    except asyncio.TimeoutError:
+        logger.error("Vector search timeout occurred - falling back to empty context") # Fix 3.2: Graceful degradation
+        return "", [], 0.0
     
     # 2. DEDUPLICATION
     raw_docs = [doc for result in search_results for doc in result]
@@ -122,17 +132,23 @@ async def retrieve_context(query_str: str, context_url: Optional[str] = None) ->
         max_score = scored_docs[0][1]
 
     # COMPROMISE: We need to stay under Groq 6,000 TPM limit.
-    # We will take Top 8 high-quality docs instead of 15.
     current_tokens = 0
     for doc, score in scored_docs:
         if score >= 0.15: 
-            # Simple heuristic: 1 char ~= 0.25 tokens. 
-            # We want to keep context under ~3500 tokens (14,000 chars)
             char_len = len(doc.page_content)
             if current_tokens + (char_len // 4) < 3500:
                 top_docs.append(doc)
                 current_tokens += (char_len // 4)
         if len(top_docs) >= 8: break
+
+    retrieval_time = time.perf_counter() - start_time
+    # Fix 7.3: Log latency and volume metrics
+    logger.info("Context retrieved", extra={
+        "query": search_query, 
+        "duration": retrieval_time, 
+        "doc_count": len(top_docs),
+        "max_score": max_score
+    })
 
     context_text = format_docs(top_docs)
     sources = list(set([doc.metadata.get("url") for doc in top_docs]))
@@ -175,8 +191,8 @@ async def stream_answer(query: str, session_id: str, context_url: Optional[str] 
     
     yield json.dumps({"type": "status", "content": "🧠 Synthesizing response..."}) + "\n"
 
-    # DEBUG: See what is actually being sent to the AI 🕵️‍♂️
-    print(f"--- DEBUG: CONTEXT LOADED ({len(context_text)} chars) for user query '{query}' ---")
+    # Fix 1.1 / 7.3: Replace print with logging and include session/latency data
+    logger.info("Starting synthesis", extra={"session_id": session_id, "query": query, "context_len": len(context_text)})
 
     # 4. THE PROMPT 🏛️🎯
     prompt = ChatPromptTemplate.from_messages([
@@ -202,9 +218,22 @@ STRICT RULES (FAILURE IS UNACCEPTABLE):
     # 5. STREAM TOKENS 🌊
     chain = prompt | llm | StrOutputParser()
     full_response = ""
-    async for chunk in chain.astream({"context": context_text, "question": query}):
-        full_response += chunk
-        yield json.dumps({"type": "token", "content": chunk}) + "\n"
+    
+    # Fix 3.1: Proper async iterator timeout 🛡️
+    # We create anaiter and use wait_for on each next token
+    astreamer = chain.astream({"context": context_text, "question": query})
+    try:
+        while True:
+            try:
+                # We wait for the next token chunk
+                chunk = await asyncio.wait_for(anext(astreamer), timeout=settings.LLM_TIMEOUT_SEC)
+                full_response += chunk
+                yield json.dumps({"type": "token", "content": chunk}) + "\n"
+            except StopAsyncIteration:
+                break
+    except asyncio.TimeoutError:
+        logger.error("LLM Generation timeout", extra={"session_id": session_id}) # Fix 3.1: Log timeout
+        yield json.dumps({"type": "token", "content": "\n\n⚠️ I apologize, but the response is taking longer than expected. Please try again in a moment."}) + "\n"
 
     # 6. SAVE TO MEMORY 💾
     HistoryManager.add_message(session_id, "user", query)

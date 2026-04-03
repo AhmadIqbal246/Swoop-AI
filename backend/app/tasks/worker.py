@@ -5,6 +5,7 @@ from app.utils.chunking import chunk_text_structurally
 from app.services.vector_db import upsert_structural_chunks
 from pinecone import Pinecone
 from app.core.config import get_settings
+from app.core.logging import app_logger as logger # Fix 1.5: Standardized Logging
 import os
 import asyncio
 import time
@@ -15,206 +16,140 @@ def process_url_task(self, url: str):
     """
     STRUCTURAL SITE MAPPER:
     Creates a High-Quality, Page-Aware Master Knowledge Base from an entire site.
-    Supports Soft-Revoke on Windows/Threads.
     """
-    logs = []
     task_id = self.request.id
+    start_time = time.perf_counter()
+    logger.info("URL processing task started", extra={"task_id": task_id, "url": url}) # Fix 1.5 lifecycle
+
+    logs = []
 
     def is_cancelled():
-        """Checks if the user has requested to stop this specific task."""
         try:
-            # Check the Redis Kill-Switch we set in the API endpoint
             val = celery_app.backend.client.get(f"cancelled:{task_id}")
             return val == b"true"
         except Exception:
             return False
 
     def emit_log(msg: str, pages: list = None):
-        if is_cancelled(): return # Don't update state if we are about to exit
-        # Only append distinct general phases to avoid explosion on large loops of the same string
+        if is_cancelled(): return
         if not logs or logs[-1] != msg:
             logs.append(msg)
         self.update_state(state='PROGRESS', meta={
             'message': msg,
-            'logs': logs,
             'processed_pages': pages or []
         })
 
     if is_cancelled(): 
+        logger.warning("Task cancelled before starting", extra={"task_id": task_id})
         return {"status": "REVOKED", "message": "Task cancelled before starting."}
 
     emit_log(f'Navigating to {url}...')
     
-    # 1. DISCOVERY & IDENTITY-CORE INJECTION 🧠🔨
-    # Regardless of where the user starts, we find the "Brain" of the site.
     parsed_url = urlparse(url)
     base_url = f"{parsed_url.scheme}://{parsed_url.netloc}".rstrip("/")
     
-    # Automatically seed the "Core Identity" pages for any domain
     to_scrape = {
-        url,                    # The provided start URL
-        base_url,               # The Root/Home Page
-        f"{base_url}/about",    # Common About/Contact variants
-        f"{base_url}/about-us",
-        f"{base_url}/team",
-        f"{base_url}/contact",
-        f"{base_url}/contact-us"
+        url, base_url, f"{base_url}/about", f"{base_url}/about-us", f"{base_url}/team", f"{base_url}/contact", f"{base_url}/contact-us"
     } 
     
-    init_res = asyncio.run(scrape_urls_parallel([url], headless=False))
-    if is_cancelled(): return {"status": "REVOKED", "message": "Swoop aborted during discovery."}
-    
-    init_data = init_res[0]
-    
-    # EXCLUSION LIST: Pages we KNOW are useless for an AI knowledge base
-    excluded_patterns = [
-        "privacy", "terms", "cookie", "legal", "disclaimer",
-        "login", "signin", "signup", "register", "logout",
-        "cart", "checkout", "account", "password", "reset",
-        ".pdf", ".zip", ".png", ".jpg", ".jpeg", ".gif", ".svg",
-        "javascript:", "wp-admin", "wp-login",
-        "?utm_", "?ref=", "?source="
-    ]
-    
-    # Normalize the homepage for deduplication
-    homepage_normalized = base_url.lower()
-    
-    for link in init_data.get("links", []):
-        full_link = link["url"].rstrip("/")
+    try:
+        init_res = asyncio.run(scrape_urls_parallel([url], headless=False))
+        if is_cancelled(): return {"status": "REVOKED", "message": "Swoop aborted during discovery."}
         
-        # Skip if it's the home page (already in set) or resolves to same anchor
-        if full_link.lower() == homepage_normalized:
-            continue
+        init_data = init_res[0]
+        excluded_patterns = ["privacy", "terms", "cookie", "legal", "disclaimer", "login", "signin", "signup", "register", "logout", "cart", "checkout", "account", ".pdf", ".zip", ".png", ".jpg", ".jpeg", ".gif", ".svg", "wp-admin", "wp-login"]
         
-        # Skip excluded junk
-        is_excluded = any(pattern in full_link.lower() for pattern in excluded_patterns)
-        
-        if not is_excluded and full_link not in to_scrape:
-            to_scrape.add(full_link)
+        homepage_normalized = base_url.lower()
+        for link in init_data.get("links", []):
+            full_link = link["url"].rstrip("/")
+            if full_link.lower() == homepage_normalized: continue
+            is_excluded = any(pattern in full_link.lower() for pattern in excluded_patterns)
+            if not is_excluded and full_link not in to_scrape:
+                to_scrape.add(full_link)
 
-    # 2. PRIORITY SCORING ENGINE 🎯
-    # We ensure high-value Identity pages (Team, About, Contact) are always in the TOP 15
-    def get_priority_score(u):
-        u_low = u.lower()
-        if u_low == homepage_normalized: return 0
-        identity_keywords = ["about", "team", "contact", "founder", "leadership"]
-        if any(kw in u_low for kw in identity_keywords): return 1
-        return 10 + len(u) # Deeper pages are secondary
+        def get_priority_score(u):
+            u_low = u.lower()
+            if u_low == homepage_normalized: return 0
+            identity_keywords = ["about", "team", "contact", "founder", "leadership"]
+            if any(kw in u_low for kw in identity_keywords): return 1
+            return 10 + len(u)
 
-    target_urls = sorted(list(to_scrape), key=get_priority_score)[:15]
-    total_found = len(target_urls)
-    
-    # 2. THE SWOOP (Parallel Scrape)
-    emit_log(f'Analyzing site architecture ({total_found} pages)...')
-    all_results = asyncio.run(scrape_urls_parallel(target_urls, headless=False))
-    
-    if is_cancelled(): return {"status": "REVOKED", "message": "Swoop aborted during parallel mapping."}
-    
-    # 3. KNOWLEDGE CONSOLIDATION & LIVE REPORTING
-    master_text = ""
-    export_dir = "scraped_data"
-    os.makedirs(export_dir, exist_ok=True)
-    
-    processed_list = []
-    
-    for index, res in enumerate(all_results):
-        # Final safety check inside the processing loop
-        if is_cancelled(): return {"status": "REVOKED", "message": "Swoop aborted during data consolidation."}
+        target_urls = sorted(list(to_scrape), key=get_priority_score)[:15]
+        total_found = len(target_urls)
         
-        final_url = res.get("final_url")
-        original_url = res.get("original_url")
-        title = res.get("title", "Unknown Page")
-        raw_text = res.get("text")
+        emit_log(f'Analyzing site architecture ({total_found} pages)...')
+        all_results = asyncio.run(scrape_urls_parallel(target_urls, headless=False))
         
-        if not raw_text:
-            continue
+        if is_cancelled(): return {"status": "REVOKED", "message": "Swoop aborted during parallel mapping."}
+        
+        master_text = ""
+        export_dir = "scraped_data"
+        os.makedirs(export_dir, exist_ok=True)
+        processed_list = []
+        
+        for index, res in enumerate(all_results):
+            if is_cancelled(): return {"status": "REVOKED", "message": "Swoop aborted during data consolidation."}
             
-        cleaned = clean_raw_text(raw_text)
-        processed_list.append(original_url)
-        
-        # LIVE PROGRESS UPDATE PER PAGE! 🚀
-        emit_log(f'Gathering knowledge from {title}...', processed_list)
-        
-        # 1. Store under FINAL URL (The physical location)
-        master_text += f"\n\n{'='*60}\n"
-        master_text += f" SOURCE PAGE: {final_url} | TITLE: {title}\n"
-        master_text += f"{'='*60}\n\n"
-        master_text += cleaned + "\n"
+            final_url = res.get("final_url")
+            original_url = res.get("original_url")
+            title = res.get("title", "Unknown Page")
+            raw_text = res.get("text")
+            
+            if not raw_text: continue
+            processed_list.append(original_url)
+            emit_log(f'Gathering knowledge from {title}...', processed_list)
+            
+            cleaned = clean_raw_text(raw_text)
+            master_text += f"\n\n{'='*60}\n SOURCE PAGE: {final_url} | TITLE: {title}\n{'='*60}\n\n{cleaned}\n"
 
-        # 2. ALSO Store under ORIGINAL URL (If different, to ensure recognition)
-        if original_url and original_url != final_url:
-            master_text += f"\n\n{'='*60}\n"
-            master_text += f" SOURCE PAGE: {original_url} | TITLE: {title}\n"
-            master_text += f"{'='*60}\n\n"
-            master_text += cleaned + "\n"
-
-    # Export Unified Master Knowledge Base File
-    parsed_domain = urlparse(url).netloc.replace(".", "_")
-    master_file_name = f"{parsed_domain}_Full_Knowledge.txt"
-    file_path = os.path.join(export_dir, master_file_name)
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(f"UNIFIED KNOWLEDGE BASE FOR {url}\n")
-        f.write(f"Retrieved: {len(target_urls)} pages successfully mapped.\n")
-        f.write(master_text)
+        parsed_domain_file = urlparse(url).netloc.replace(".", "_")
+        file_path = os.path.join(export_dir, f"{parsed_domain_file}_Full_Knowledge.txt")
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(master_text)
+            
+        if is_cancelled(): return {"status": "REVOKED", "message": "Swoop aborted before vectorization."}
+        emit_log('Processing site data...', processed_list)
         
-    # 4. STRUCTURAL BATCH PROCESSING & VECTORIZATION
-    if is_cancelled(): return {"status": "REVOKED", "message": "Swoop aborted before vectorization."}
-    
-    emit_log('Processing site data...', processed_list)
-    
-    structural_chunks = chunk_text_structurally(master_text, source_url=url)
-    upsert_structural_chunks(structural_chunks)
+        structural_chunks = chunk_text_structurally(master_text, source_url=url)
+        upsert_structural_chunks(structural_chunks)
 
-    # 5. PINECONE READINESS GATE ⏳
-    # Wait for Pinecone eventual-consistency: poll until vector count increases.
-    emit_log('Finalizing analysis...', processed_list)
-    try:
-        settings = get_settings()
-        pc = Pinecone(api_key=settings.PINECONE_API_KEY)
-        index = pc.Index(settings.PINECONE_INDEX_NAME)
-        # Get baseline vector count before upsert was called (it was just called, so poll for change)
-        deadline = time.time() + 30  # wait up to 30 seconds
-        while time.time() < deadline:
-            if is_cancelled(): return {"status": "REVOKED", "message": "Swoop aborted during index synchronization."}
-            stats = index.describe_index_stats()
-            total_vectors = stats.get('total_vector_count', 0)
-            if total_vectors > 0:
-                break  # Index is live
-            time.sleep(2)
-    except Exception as e:
-        # Non-fatal: log and continue
-        print(f"Readiness check warning: {e}")
+        # Readiness gate
+        emit_log('Finalizing analysis...', processed_list)
+        try:
+            pc = Pinecone(api_key=get_settings().PINECONE_API_KEY)
+            index = pc.Index(get_settings().PINECONE_INDEX_NAME)
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                if is_cancelled(): break
+                stats = index.describe_index_stats()
+                if stats.get('total_vector_count', 0) > 0: break
+                time.sleep(2)
+        except Exception as e:
+            logger.warning("Index readiness check failed", exc_info=True)
 
-    # 6. REGISTER ENTITY IN THE GLOBAL INVENTORY 🗃️
-    try:
-        import json
-        registry_path = os.path.join(export_dir, "entities_registry.json")
-        registry = {}
+        # Registry update
+        try:
+            import json
+            registry_path = os.path.join(export_dir, "entities_registry.json")
+            registry = {}
+            if os.path.exists(registry_path):
+                with open(registry_path, "r", encoding="utf-8") as rf: registry = json.load(rf)
+            
+            p_domain = urlparse(url).netloc
+            registry[p_domain] = { "url": url, "status": "INDEXED", "pages_counted": len(processed_list), "last_updated": time.strftime("%Y-%m-%d %H:%M:%S") }
+            with open(registry_path, "w", encoding="utf-8") as wf: json.dump(registry, wf, indent=4)
+        except Exception:
+            logger.warning("Registry update failed", exc_info=True)
+
+        duration = time.perf_counter() - start_time
+        logger.info("URL processing completed", extra={"task_id": task_id, "duration": duration, "pages": len(processed_list)}) # Fix 1.5 lifecycle
         
-        # Load existing registry if it exists
-        if os.path.exists(registry_path):
-            with open(registry_path, "r", encoding="utf-8") as rf:
-                registry = json.load(rf)
-        
-        # Update/Add the current site
-        parsed_domain = urlparse(url).netloc
-        registry[parsed_domain] = {
-            "url": url,
-            "status": "INDEXED",
-            "pages_counted": len(processed_list),
-            "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")
+        return {
+            "status": "COMPLETED",
+            "message": "All set!",
+            "processed_pages": processed_list,
+            "master_document": os.path.abspath(file_path)
         }
-        
-        # Save back to registry
-        with open(registry_path, "w", encoding="utf-8") as wf:
-            json.dump(registry, wf, indent=4)
-            
-    except Exception as e:
-        print(f"Registry update warning: {e}")
-
-    return {
-        "status": "COMPLETED",
-        "message": "All set! I have finished reading the website and am ready to answer your questions.",
-        "processed_pages": processed_list,
-        "master_document": os.path.abspath(file_path)
-    }
+    except Exception:
+        logger.error("Critical worker failure", exc_info=True, extra={"task_id": task_id, "url": url})
+        return {"status": "FAILED", "message": "Critical failure during scraping."}
