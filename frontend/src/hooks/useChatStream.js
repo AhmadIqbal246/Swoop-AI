@@ -16,6 +16,21 @@ export const useChatStream = (contextUrl) => {
       const newId = `session_${Math.random().toString(36).substring(2, 15)}_${Date.now()}`;
       setSessionId(newId);
       localStorage.setItem('swoop_session_id', newId);
+    } else {
+      // 🚀 RESTORE HISTORY (Rehydration)
+      const recoverHistory = async () => {
+        const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1/chatbot';
+        try {
+          const res = await fetch(`${baseUrl}/history/${sessionId}`);
+          const data = await res.json();
+          if (data.history) {
+            setMessages(data.history);
+          }
+        } catch (e) {
+          console.warn("History recovery failed:", e);
+        }
+      };
+      recoverHistory();
     }
   }, [sessionId]);
 

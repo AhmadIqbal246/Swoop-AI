@@ -10,7 +10,7 @@ const ChatInterface = ({ taskState, setTaskState }) => {
   const scrollRef = useRef(null);
 
   // DATA HOOKS 🎣
-  const { messages, setMessages, isTyping, sendMessage, addSwoopCard, stopStreaming } = useChatStream(taskState?.url);
+  const { messages, setMessages, isTyping, sendMessage, clearHistory, addSwoopCard, stopStreaming } = useChatStream(taskState?.url);
 
   const { startSwoop, stopSwoop, isPending: isSwoopLoading } = useSwoop();
 
@@ -317,19 +317,35 @@ const ChatInterface = ({ taskState, setTaskState }) => {
             )}
           </form>
 
-          {/* Mode Switcher Link/Globe Icon - Moved to Right */}
-          <button
-            onClick={() => setIsSwoopMode(!isSwoopMode)}
-            className={`flex-shrink-0 w-11 h-11 flex items-center justify-center rounded-full transition-all duration-300 border shadow-sm
-              ${isSwoopMode
-                ? 'bg-primary text-white border-primary shadow-primary/20 scale-110'
-                : 'bg-white text-slate-400 border-slate-200 hover:text-primary hover:border-primary/30'}`}
-            title={isSwoopMode ? "Switch to Chat" : "Switch to Swoop (Index URL)"}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-            </svg>
-          </button>
+          {/* UTILITY BUTTONS 🛠️ */}
+          <div className="flex-shrink-0 flex items-center gap-2">
+            {/* Clear Chat Button */}
+            {messages.length > 0 && (
+              <button
+                onClick={clearHistory}
+                className="w-11 h-11 flex items-center justify-center rounded-full bg-white text-slate-400 border border-slate-200 hover:text-red-500 hover:border-red-200 hover:bg-red-50/30 transition-all shadow-sm"
+                title="Clear Chat History"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </button>
+            )}
+
+            {/* Mode Switcher Link/Globe Icon */}
+            <button
+              onClick={() => setIsSwoopMode(!isSwoopMode)}
+              className={`w-11 h-11 flex items-center justify-center rounded-full transition-all duration-300 border shadow-sm
+                ${isSwoopMode
+                  ? 'bg-primary text-white border-primary shadow-primary/20 scale-110'
+                  : 'bg-white text-slate-400 border-slate-200 hover:text-primary hover:border-primary/30'}`}
+              title={isSwoopMode ? "Switch to Chat" : "Switch to Swoop (Index URL)"}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+              </svg>
+            </button>
+          </div>
         </div>
         <p className="text-center text-[10px] text-slate-400 font-medium mt-3 tracking-wide bg-white/50 backdrop-blur-sm rounded-full py-1 px-4 mx-auto block w-max">
           {isSwoopMode ? "Swooping generates a temporary context for your AI session." : "AI can make mistakes. Always verify critical technical details against the raw sources."}
